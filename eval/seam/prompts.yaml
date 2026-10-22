@@ -1,0 +1,91 @@
+# 30 prompts that need long answers: 15 prose, 9 code, 6 lists and steps.
+- id: p01
+  kind: prose
+  text: Explain how a change in the central bank's interest rate affects a first-time buyer's mortgage payments, with a worked example.
+- id: p02
+  kind: prose
+  text: Write a short story of about 500 words about a lighthouse keeper who finds a message in a bottle addressed to someone who died fifty years ago.
+- id: p03
+  kind: prose
+  text: Explain to a curious 12-year-old why the sky is blue during the day and red at sunset.
+- id: p04
+  kind: prose
+  text: Compare remote work and office work from a team lead's point of view. Cover communication, hiring, mentoring and focus, and end with a recommendation.
+- id: p05
+  kind: prose
+  text: Describe the history of the Silk Road and how it shaped the cities of Central Asia.
+- id: p06
+  kind: prose
+  text: Write a cover letter for a junior data analyst role at a logistics company. The applicant has one internship and a strong SQL background.
+- id: p07
+  kind: prose
+  text: Explain how vaccines train the immune system, including the roles of antibodies and memory cells.
+- id: p08
+  kind: prose
+  text: Write a launch blog post for a fictional note-taking app that has just added offline sync. Explain what changed and why it matters to users.
+- id: p09
+  kind: prose
+  text: Explain the CAP theorem with two real-world examples of systems that make different trade-offs.
+- id: p10
+  kind: prose
+  text: Summarize the main arguments for and against a four-day work week, and say what the evidence so far suggests.
+- id: p11
+  kind: prose
+  text: Explain how a household refrigerator keeps food cold, following the refrigerant through one full cycle.
+- id: p12
+  kind: prose
+  text: Write a short travel guide for spending three days in a small mountain town in winter, with ideas for each day.
+- id: p13
+  kind: prose
+  text: Explain what inflation is, what causes it, and why many central banks aim for about 2 percent.
+- id: p14
+  kind: prose
+  text: Write a warm retirement speech for a school librarian who has worked at the same school for 30 years.
+- id: p15
+  kind: prose
+  text: Explain how photosynthesis works and why it matters for the climate.
+- id: p16
+  kind: code
+  text: Write a Python LRU cache class from scratch, without functools, with type hints, docstrings and a short usage example. Explain the design after the code.
+- id: p17
+  kind: code
+  text: Write a Python function that reads a CSV of transactions (date, category, amount) and returns monthly totals per category. Include pytest tests and explain edge cases.
+- id: p18
+  kind: code
+  text: Implement a debounce function in TypeScript with leading and trailing options, then explain how it works and when to use each option.
+- id: p19
+  kind: code
+  text: Given tables orders(id, customer_id, total, created_at) and customers(id, name, country), write SQL queries for the top 5 customers by revenue in each month and for month-over-month revenue growth per country. Explain each query.
+- id: p20
+  kind: code
+  text: Write a Go HTTP server with a /health endpoint, request logging middleware and graceful shutdown on SIGTERM. Explain the shutdown sequence.
+- id: p21
+  kind: code
+  text: Write a Python asyncio function that fetches a list of URLs with at most 5 requests in flight, retries failures with exponential backoff, and returns results in input order. Explain the concurrency control.
+- id: p22
+  kind: code
+  text: Implement a small event emitter class in JavaScript with on, off, once and emit, plus examples, and explain how once is implemented.
+- id: p23
+  kind: code
+  text: Write a Bash script that backs up a directory to a timestamped tar.gz file and keeps only the 7 most recent backups. Explain each part of the script.
+- id: p24
+  kind: code
+  text: Implement a binary search tree in Rust with insert, contains and in-order traversal, and explain the ownership choices.
+- id: p25
+  kind: list
+  text: Give a step-by-step checklist for preparing for a system design interview over four weeks.
+- id: p26
+  kind: list
+  text: Give a 10-step guide to starting a home vegetable garden, with a short explanation for each step.
+- id: p27
+  kind: list
+  text: List 12 common mistakes new engineering managers make, each with a one-paragraph explanation and a fix.
+- id: p28
+  kind: list
+  text: Give the steps to migrate a PostgreSQL database to a new server with minimal downtime, including checks before and after the switch.
+- id: p29
+  kind: list
+  text: Write a packing list for a week-long hiking trip, grouped by category, with a note on why each item matters.
+- id: p30
+  kind: list
+  text: Give a week-by-week plan to learn basic Japanese in 8 weeks, with goals and practice ideas for each week.

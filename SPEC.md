@@ -324,11 +324,13 @@ The production default per model is the strategy that measures best, set through
 
 **Seam repair**
 
-- Normalize whitespace and case before matching.
-- Remove exact overlap: the longest suffix of `emitted_text`, at least 3 tokens, that is also a prefix of the continuation.
-- Remove a paraphrased restart: if the continuation's first sentence overlaps the last sentence of `emitted_text` with a token-overlap ratio of 0.6 or more, cut the continuation at the end of that sentence.
-- Strip a leading preface ("Sure,", "Continuing:") by a short pattern list.
-- Fix whitespace at the join, including answers cut mid-word.
+Implemented in `src/switchyard/streaming/seam.py`, in this order:
+
+- Strip a leading preface ("Sure,", "Continuing:", a leading ellipsis) by a short pattern list.
+- Inside an open code fence, strip a restarted fence line (`` ```python ``).
+- Remove exact overlap: the longest suffix of `emitted_text`, at least 3 tokens with at least 2 words, that is also a prefix of the continuation, compared without case. If the answer was cut mid-word and the continuation repeats it in full, keep only the rest of that word.
+- Remove a paraphrased restart: if at least 60% of the cut sentence's words appear in the continuation's first sentence, find where the restatement reaches the cut point (the last three, then two, words the client saw) and keep only what follows. If no such point is found, keep the text and record `paraphrase_suspected`.
+- Fix the join: drop doubled spaces or newlines; if a word meets a word, either finish the cut word (when the joined word appears in the prompt or answer) or insert a space; add a space after sentence punctuation outside code.
 - Buffer at most the continuation's first sentence or 200 characters, whichever comes first, and record the added delay as seam latency.
 
 **JSON answers.** When `response_format` asks for JSON or a schema, the relay buffers the whole answer and streams nothing until it is complete and valid. Any failure is then a clean failover before the first byte. No JSON answer is ever continued. LIMITATIONS says so, and JSON is reported separately in the evaluation.
@@ -444,7 +446,7 @@ breaker_events(id, provider_model, from_state, to_state, reason, at)
 
 ### 12.1 Week 1 seam test (go or no-go)
 
-A script with no gateway: 30 prompts and three provider pairs (Claude to GPT, GPT to Claude, Claude to DeepSeek). Cut each reference answer at a random point and continue it with strategies R, I and I+S, plus N on DeepSeek. It prints the joins side by side. Budget: under $5 and 2 to 4 hours.
+A script with no gateway (`eval/seam/spike.py`): 30 prompts and three provider pairs (Claude to GPT, GPT to Claude, Claude to DeepSeek), using `claude-haiku-5-5`, `gpt-6-luna` and `deepseek-flash` with thinking off. Cut each reference answer at a random point and continue it with strategies R, I and I+S, plus N on DeepSeek. It prints the joins side by side. Budget: under $5 and 2 to 4 hours.
 
 Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, the project still ships, and the headline becomes the honest negative result plus the strategy table.
 

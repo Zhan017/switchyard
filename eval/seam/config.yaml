@@ -1,0 +1,30 @@
+# Week 1 seam test settings.
+# Prices are USD per million tokens, checked on 2026-10-22 from each provider's docs.
+# DeepSeek uses its peak rate, the higher of its two, so cost estimates stay on the safe side.
+
+seed: 7
+max_tokens: 1200
+concurrency: 4
+budget_usd: 5.0
+tail_chars_in_instruction: 200
+
+models:
+  claude:
+    provider: anthropic
+    model: claude-haiku-5-5
+    price: { input: 0.10, cached_input: 0.01, output: 0.50 }
+  gpt:
+    provider: openai
+    model: gpt-6-luna
+    price: { input: 0.10, cached_input: 0.01, output: 0.50 }
+  deepseek:
+    provider: deepseek
+    model: deepseek-flash
+    price: { input: 0.30, cached_input: 0.006, output: 1.20 }
+
+# primary -> fallback. The primary writes the reference answer, which is cut;
+# the fallback finishes it.
+pairs:
+  - [claude, gpt]
+  - [gpt, claude]
+  - [claude, deepseek]
