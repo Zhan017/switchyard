@@ -1,6 +1,6 @@
 # Switchyard: spec
 
-Status: draft v2 · Owner: Zhan Kuatuly · Last updated: 2026-10-22 · Changes from v1 are listed in section 21.
+Status: draft v2.1 · Owner: Zhan Kuatuly · Last updated: 2026-10-22 · Changes from v1 are listed in section 21.
 
 ## 1. Summary
 
@@ -10,7 +10,7 @@ Clients send OpenAI-style requests to one endpoint. Switchyard picks a provider,
 
 The headline is the measurement, not the feature. The README will open with a line like this, filled in from real results:
 
-> When a provider dies mid-answer, how well can another model finish it? Across N cuts and 4 provider pairs, instructed continuation with seam repair read as seamless X% of the time (95% interval a to b), against Y% for restarting the answer and Z% for native continuation. Switchyard uses the best strategy per pair and served P% of requests through 5 scripted outages.
+> When a provider dies mid-answer, how well can another model finish it? Across N cuts and 6 provider pairs, instructed continuation with seam repair read as seamless X% of the time (95% interval a to b), against Y% for restarting the answer and Z% for native continuation. Switchyard uses the best strategy per pair and served P% of requests through 5 scripted outages.
 
 ## 2. Where this stands
 
@@ -25,8 +25,8 @@ So mid-stream continuation exists. What nobody publishes is how good the joins a
 ### 2.1 What it proves
 
 - **Reliability engineering for LLMs:** circuit breakers with active probes, retry budgets, failover, stall detection and cost attribution. These are standard system design interview topics.
-- **Current provider knowledge:** the Claude 4.6 prefill change, usage missing on cut streams, error events inside a 200 stream, all pinned by contract tests on recorded real streams.
-- **Honest evaluation:** a seam-quality table with confidence intervals, two judges from different model families checked against hand labels, and the misses published.
+- **Current provider knowledge:** the Claude 4.6 prefill change, DeepSeek's beta prefix completion and keep-alive comments, usage missing on cut streams, error events inside a 200 stream, all pinned by contract tests on recorded real streams.
+- **Honest evaluation:** a seam-quality table with confidence intervals, judges from three model families with a neutral judge for every pair, checked against hand labels, and the misses published.
 - **A foundation:** Threadline, Groundtruth, Rowcall, Casefile and Slotfill send their model calls through Switchyard, so its dashboard fills with real traffic and real cost per project as they get built.
 
 ### 2.2 How it differs from Dastar
@@ -53,10 +53,10 @@ They connect through one integration. Dastar's agent milestone plans an Anthropi
 | --- | --- | --- | --- |
 | Language | Python 3.12, FastAPI, asyncio | Main stack, fastest to ship, matches the other five projects | Overhead in milliseconds, not microseconds |
 | Provider access | Own adapters over httpx | Full control of streams, required for continuation strategies | Fewer providers |
-| Providers in v0.1 | OpenAI and Anthropic, plus `mockllm` | The two keys available; both families matter for the seam pairs and the judges | No local model until stretch |
+| Providers in v0.1 | OpenAI, Anthropic and DeepSeek, plus `mockllm` | Three families for the seam pairs and the judges; DeepSeek is the only hosted API with documented native continuation; its API is OpenAI-compatible, so the adapter is small | No local model until stretch |
 | Headline | Measured comparison of continuation strategies | The feature exists elsewhere; the measurement doesn't | The result may be negative, and is published either way |
 | JSON answers | Buffer the whole answer; on failure, restart cleanly on the next provider | A continued JSON fragment can't be validated, and JSON clients rarely need token streaming | No streaming for JSON requests |
-| Judges | One OpenAI and one Anthropic model, each judging every item, checked against 50 hand labels | Only these two keys; two families let self-preference be measured instead of hidden | Twice the judge cost, still a few dollars |
+| Judges | One OpenAI, one Anthropic and one DeepSeek model, each judging every item, checked against 50 hand labels | Every pair gets at least one judge from outside both of its families, and self-preference is measured instead of hidden | Three times the judge cost, capped in 12.2 |
 | Order of work | Seam test on real providers in week 1, before gateway work | The headline risk is found out first | Gateway work starts a week later |
 | Targets | Pass when the lower bound of the 95% interval clears the target | A flat 99.5% on 100 requests is decided by one failure | Larger request counts per scenario |
 | Reasoning models | Not in v1 route groups | Their long silent thinking looks like a stall | Fewer models covered |
@@ -72,7 +72,7 @@ They connect through one integration. Dastar's agent milestone plans an Anthropi
 ### v0.1 (ship first)
 
 - `POST /v1/chat/completions` in OpenAI format, streaming and non-streaming, for text and JSON answers. Tool calls pass through with the rules in 7.6.
-- Adapters for OpenAI and Anthropic, plus `mockllm`.
+- Adapters for OpenAI, Anthropic and DeepSeek, plus `mockllm`.
 - Health tracking, circuit breakers with active probes, same-provider retries with a retry budget, failover down a route group, stall detection.
 - Mid-stream failover with the strategies in 7.6, and seam repair.
 - Tenants and features from config; cost per tenant, feature and provider, with estimated usage for cut streams.
@@ -85,7 +85,7 @@ They connect through one integration. Dastar's agent milestone plans an Anthropi
 ### v1 (after v0.1 ships)
 
 - Scenarios S2, S7 and S10 (Redis unavailable).
-- The full seam evaluation: 200 prompts, both judges, 50 hand labels.
+- The full seam evaluation: 200 prompts, all three judges, 50 hand labels.
 - Tool-call failover rules covered by contract tests on recorded streams.
 
 ### Stretch (in this cut order: the first item is the first to drop)
@@ -115,6 +115,7 @@ flowchart LR
   R --> X[Attempt runner: retries, failover, stall watch]
   X --> P1[OpenAI adapter]
   X --> P2[Anthropic adapter]
+  X --> P3[DeepSeek adapter]
   X --> P4[mockllm adapter]
   X <--> S[Stream relay: emitted-text buffer, continuation strategy, seam repair]
   S --> C
@@ -210,7 +211,7 @@ One request class in v0.1. Defaults live in config per route group:
 | --- | --- | --- |
 | Request deadline | 120 s | When it passes mid-stream, send the `deadline_exceeded` error event |
 | Time to first token | 5 s | Longer than this counts as a failure for health |
-| Stall timeout | 5 s between content deltas | Only content deltas reset it. Anthropic `ping` events and unknown event types don't |
+| Stall timeout | 5 s between content deltas | Only content deltas reset it. Anthropic `ping` events, DeepSeek `: keep-alive` comments and unknown event types don't |
 | Probe timeout | 5 s | See 7.4 |
 
 ### 7.2 Route groups and model capabilities
@@ -220,6 +221,7 @@ route_groups:
   chat-smart:
     - anthropic/<current mid-tier model>
     - openai/<current mid-tier model>
+    - deepseek/deepseek-flash
     default_max_tokens: 1024
 models:
   anthropic/<current mid-tier model>:
@@ -232,7 +234,19 @@ models:
     tools: true
     json: true
     continuation: instructed   # no documented continuation parameter
+  deepseek/deepseek-flash:
+    tools: true
+    json: true
+    thinking: disabled         # thinking is on by default; v1 has no reasoning models
+    continuation: native       # beta prefix completion; the evaluation decides whether to keep it
 ```
+
+**DeepSeek adapter.** DeepSeek's API is OpenAI-compatible, so its adapter extends the OpenAI one with four differences:
+
+- Every request sets `thinking: {"type": "disabled"}`.
+- Native continuation uses the beta base URL (`https://api.deepseek.com/beta`): the partial answer goes in as the last message, with role `assistant` and `prefix: true`. Because the feature is beta, a contract test runs it on every release, and the model falls back to `instructed` if it starts failing.
+- While a request waits in DeepSeek's queue, the stream sends `: keep-alive` comments for up to 10 minutes. They don't count as a first token or as content, so the time-to-first-token budget still catches a queued request.
+- DeepSeek's limits are on concurrent requests, so its 429s are treated like any other 429 cooldown. Usage reports cache hits and misses separately, priced as cached and uncached input.
 
 `continuation` is `native`, `instructed` or `none`, and the seam evaluation decides each value. Pick the exact models at build time. Cheap models tend to differ most in style, which affects seams, so the evaluation records the models it used.
 
@@ -292,7 +306,7 @@ stateDiagram-v2
 | --- | --- | --- |
 | E, error | Stop and send the error event | LiteLLM chat completions (v1.97 and later), LLM Gateway |
 | R, restart | Start the answer again from the top on the fallback; the client sees the beginning twice | The restart approach some gateways use |
-| N, native continuation | The partial answer goes in as a trailing assistant message and the model continues it. vLLM needs `continue_final_message: true` and `add_generation_prompt: false`. Claude 4.6 and later reject it with a 400. OpenAI accepts a trailing assistant message but has no documented continuation, so the model may start a new reply | AISIX; LiteLLM before v1.97 |
+| N, native continuation | The partial answer goes in as a trailing assistant message and the model continues it. vLLM needs `continue_final_message: true` and `add_generation_prompt: false`. DeepSeek documents it as beta prefix completion (`prefix: true`). Claude 4.6 and later reject it with a 400. OpenAI accepts a trailing assistant message but has no documented continuation, so the model may start a new reply | AISIX; LiteLLM before v1.97 |
 | I, instructed | The original messages, then an assistant message with the full partial answer, then a user message: "Your previous message was cut off. Continue from exactly where it stopped. The last characters were: «last 200 characters». Output only the continuation." This is the pattern Anthropic documents for Claude 4.6 and later, and it also works on OpenAI | Not documented by any gateway checked |
 | I+S, instructed with seam repair | I, plus the seam repair below | Switchyard |
 
@@ -335,7 +349,7 @@ The production default per model is the strategy that measures best, set through
 
 ### 7.7 Cost accounting
 
-- Always send `stream_options.include_usage` upstream to OpenAI.
+- Always send `stream_options.include_usage` upstream to OpenAI and DeepSeek.
 - A cut stream usually has no final usage: OpenAI documents that an interrupted stream may miss its usage chunk, and Anthropic's cumulative usage normally arrives near the end. For cut attempts, estimate output tokens with a local tokenizer over the text received, add a stated safety margin, and set `usage_estimated = true`. Exact and estimated cost are reported separately.
 - `prices.yaml` holds, per provider and model: input, output, cached-input and cache-write prices per million tokens, long-context price tiers, and an effective date.
 - Every attempt has a `role` (primary, retry, failover, continuation, probe) and its tokens are split by `cost_class`: `served`, `wasted` (a failed attempt, or overlap trimmed by seam repair) or `probe`.
@@ -430,22 +444,23 @@ breaker_events(id, provider_model, from_state, to_state, reason, at)
 
 ### 12.1 Week 1 seam test (go or no-go)
 
-A script with no gateway: 30 prompts, two provider pairs, cut each reference answer at a random point, and continue it with strategies R, I and I+S (and N where a provider supports it). It prints the joins side by side. Budget: under $5 and 2 to 4 hours.
+A script with no gateway: 30 prompts and three provider pairs (Claude to GPT, GPT to Claude, Claude to DeepSeek). Cut each reference answer at a random point and continue it with strategies R, I and I+S, plus N on DeepSeek. It prints the joins side by side. Budget: under $5 and 2 to 4 hours.
 
 Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, the project still ships, and the headline becomes the honest negative result plus the strategy table.
 
 ### 12.2 Full evaluation
 
 - **Prompt set:** 200 prompts that need long answers (at least 300 tokens): 50% prose, 30% code, 20% lists and steps. JSON is reported separately, since JSON answers are buffered and restarted.
-- **Provider pairs:** Claude to GPT, GPT to Claude, Claude to Claude, GPT to GPT.
+- **Provider pairs:** Claude to GPT, GPT to Claude, Claude to DeepSeek, GPT to DeepSeek, Claude to Claude, GPT to GPT. N is measured on the DeepSeek pairs.
 - **Cuts:** a seeded random point between 20% and 80% of each reference answer, saved with the data.
 - **Strategies:** R, N where supported, I and I+S, on the same cuts.
 - **Primary metric:** per item, a judge sees the uninterrupted reference and the stitched answer in both orders and answers "which one was interrupted and resumed?" The item is seamless if the judge is wrong, or inconsistent across the two orders. Report the seamless rate with a 95% interval.
 - **Seam-local view:** the same question on 300 characters either side of the join, so length and style differences elsewhere don't give the answer away.
-- **Judges:** one OpenAI model and one Anthropic model; every item is judged by both. Report each judge's rate, their agreement, and self-preference: each judge's seamless rate on continuations from its own family against the other family's.
+- **Judges:** one OpenAI, one Anthropic and one DeepSeek model; every item is judged by all three. The headline number for each pair comes only from judges outside both of its families (for Claude to GPT, that's the DeepSeek judge), so every pair has a neutral score. Also report each judge's rate, their agreement, and self-preference: each judge's seamless rate on continuations from its own family against the others.
 - **Human check:** hand-label 50 items. Publish judge numbers only if a judge's Cohen's kappa against the hand labels is at least 0.6.
 - **Secondary metrics:** a 1 to 5 coherence score; automatic checks for repeated text, preface leaks and length against the reference.
 - **Cost:** extra input and output tokens per failover, by strategy.
+- **Budget:** estimate the full run's cost from the week 1 run and set a cap before starting. If it's over the cap, run the non-neutral judges on a 25% sample first, then cut prompts per pair to 100, before cutting any pair.
 - **Report:** one table of strategy by provider pair, with intervals, seam latency and extra cost.
 
 ## 13. Performance targets
@@ -466,6 +481,7 @@ Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, 
 - **Contract,** on recorded real streams:
   - Anthropic error events inside a 200 stream, `ping` events, refusals
   - OpenAI tool-call deltas keyed by `index`, the usage chunk, content filters
+  - DeepSeek `: keep-alive` comments, beta prefix completion, thinking turned off, cache hit and miss usage
   - the official OpenAI Python and TypeScript SDKs against Switchyard's comments and error event
 - **Integration:** `docker compose up`, then the v0.1 scenarios against `mockllm` with shortened durations, in CI.
 - **CI** (GitHub Actions): ruff, mypy in strict mode on `src`, unit, contract and integration tests, image build.
@@ -485,7 +501,7 @@ switchyard/
   src/switchyard/
     api/            routes, schemas, auth
     core/           canonical types, router, retries, failover
-    providers/      base.py, openai.py, anthropic.py, mock.py
+    providers/      base.py, openai.py, anthropic.py, deepseek.py, mock.py
     resilience/     health.py, breaker.py, prober.py
     streaming/      relay.py, strategies.py, seam.py
     accounting/     pricing.py, usage.py, tokenize.py
@@ -507,7 +523,7 @@ Planned in hours, at 10 to 12 hours a week.
 | Week | Hours | Milestone | Done when |
 | --- | --- | --- | --- |
 | 1 | 10 to 12 | Seam test and overhead stub | The week 1 seam test report with joins and a go or no-go note; overhead measured on a stub |
-| 2 | 10 to 12 | Proxy | OpenAI and Anthropic adapters, streaming and non-streaming, text and JSON; `mockllm`; tenants and features; cost with estimated usage; `/metrics`; CI green |
+| 2 | 10 to 12 | Proxy | OpenAI, Anthropic and DeepSeek adapters, streaming and non-streaming, text and JSON; `mockllm`; tenants and features; cost with estimated usage; `/metrics`; CI green |
 | 3 | 10 to 12 | Resilience | Health, breaker with probes, retries, failover, stall detection; S1, S4 and S8 pass on mocks |
 | 4 | 10 to 12 | Mid-stream | Strategies, seam repair, tool-call rules, heartbeats; S5 and S6 pass on mocks; the first seam evaluation on real providers |
 | 5 | 10 to 12 | v0.1 release | LiteLLM baseline with two configs and both endpoints; results tables; README, diagram, video, LIMITATIONS; tag v0.1 |
@@ -531,8 +547,9 @@ v0.1 is about 50 to 60 hours. v1 (S2, S7, S10, the full 200-prompt evaluation wi
 | --- | --- |
 | Seam quality turns out poor | Found in week 1; the project still ships with the negative result and the strategy table |
 | Competitor behavior changes before publication | Claims are dated and re-checked in the month of publication |
-| Judge bias | Two judges from different families, self-preference reported, kappa of 0.6 against hand labels required |
-| Provider APIs change (Claude 4.6 already dropped prefill) | Capability flags per model; contract tests on recorded streams |
+| Judge bias | Three judge families, a neutral judge for every pair, self-preference reported, kappa of 0.6 against hand labels required |
+| Provider APIs change (Claude 4.6 already dropped prefill; DeepSeek's prefix completion is beta) | Capability flags per model; contract tests on recorded streams; fall back to instructed continuation |
+| Data handling differs by provider | Only synthetic eval prompts and public-data project traffic go through; each route group lists its providers, so one can be left out |
 | The LiteLLM comparison looks unfair | Two configs, a published settings mapping, both endpoints, "by design" wording, invited review, wins reported first |
 | Self-graded scenarios | Scenarios and targets tagged in git before the first run; confidence intervals; misses published |
 | Redis as a single point of failure | In-process fallback; S10 |
@@ -549,7 +566,7 @@ In cut order, first to drop at the top: hedged requests (with a delay from a lon
 
 - The exact models for each route group, chosen at build time.
 - The exact LiteLLM version, chosen at build time.
-- Whether to add a third judge family later, if another key becomes available.
+- Whether to add Qwen through DeepInfra as a fourth judge, only if the three judges disagree too much.
 
 ## 21. Changes from v1
 
@@ -565,11 +582,22 @@ Made after a review of v1 on 2026-10-22.
 - The LiteLLM comparison uses two configs and both endpoints.
 - The seam evaluation uses an interrupted-or-not judgment in both orders, two judges, a seam-local view and a kappa check.
 
+v2.1, the same day:
+
+- DeepSeek added as a third provider. It is the only hosted API with documented native continuation (beta prefix completion), so strategy N gets real data.
+- A DeepSeek judge added, so every pair has a judge from outside both of its families.
+- Two DeepSeek pairs added (6 in total), the week 1 test covers N, and the full evaluation has a budget cap.
+- OpenRouter was considered and left out as a provider, because it falls back between its own upstream hosts and would hide the failures Switchyard needs to see.
+
 ## References
 
 - Anthropic, Streaming messages: error events, `ping`, cumulative usage, error recovery for Claude 4.5 vs 4.6 and later: https://platform.claude.com/docs/en/build-with-claude/streaming
 - Anthropic, Using the Messages API: prefill not supported on Claude 4.6 and later: https://platform.claude.com/docs/en/build-with-claude/working-with-messages
 - OpenAI, Chat completions API reference: chunk fields, the usage chunk, usage missing on interrupted streams, tool-call deltas: https://developers.openai.com/api/reference/resources/chat
+- DeepSeek, Chat Prefix Completion (Beta): https://api-docs.deepseek.com/guides/chat_prefix_completion
+- DeepSeek, Create chat completion (models, thinking mode, `stream_options`, cache usage fields): https://api-docs.deepseek.com/api/create-chat-completion
+- DeepSeek, Rate limit (`: keep-alive` comments, 10-minute queue limit, concurrency limits): https://api-docs.deepseek.com/quick_start/rate_limit
+- OpenRouter, API reference (prefill, fallback between upstream providers): https://openrouter.ai/docs/api/reference/overview/
 - vLLM, OpenAI-compatible server (`continue_final_message`): https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/
 - Ollama, OpenAI compatibility: https://docs.ollama.com/api/openai-compatibility
 - API7 AISIX, Mid-stream fallback: https://docs.api7.ai/ai-gateway/routing/mid-stream-fallback
