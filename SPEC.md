@@ -1,168 +1,217 @@
 # Switchyard: spec
 
-Status: draft v1 · Owner: Zhan Kuatuly · Last updated: 2026-10-19
+Status: draft v2 · Owner: Zhan Kuatuly · Last updated: 2026-10-22 · Changes from v1 are listed in section 21.
 
 ## 1. Summary
 
-Switchyard is an LLM gateway that keeps answers flowing when providers fail, including when a provider dies halfway through a streamed answer.
+Switchyard is an LLM gateway that keeps answers flowing when providers fail, and measures how well each way of finishing a broken answer actually works.
 
-Clients send OpenAI-style requests to one endpoint. Switchyard picks a provider, tracks its health, and fails over when it degrades. If a stream breaks mid-answer, Switchyard continues the same answer on another provider from where it stopped. Every request is attributed to a tenant and a feature, with its cost.
+Clients send OpenAI-style requests to one endpoint. Switchyard picks a provider, tracks its health, and fails over when it degrades. When a provider dies halfway through a streamed answer, Switchyard finishes the answer on another provider using the continuation strategy that measured best for that provider pair. Every request is attributed to a tenant and a feature, with its cost.
 
-The README will open with this line, filled in from real results:
+The headline is the measurement, not the feature. The README will open with a line like this, filled in from real results:
 
-> Under 9 scripted provider outages, Switchyard served X% of interactive requests. When a provider died mid-answer, it finished Y% of answers on another provider with no visible error, compared with Z% for LiteLLM's proxy under the same tests.
+> When a provider dies mid-answer, how well can another model finish it? Across N cuts and 4 provider pairs, instructed continuation with seam repair read as seamless X% of the time (95% interval a to b), against Y% for restarting the answer and Z% for native continuation. Switchyard uses the best strategy per pair and served P% of requests through 5 scripted outages.
 
-## 2. What it proves
+## 2. Where this stands
 
-- **Reliability engineering for LLMs:** circuit breakers, safe retries, backpressure, tail latency and cost attribution. These are standard system design interview topics.
-- **A feature popular gateways lack:** mid-stream continuation. LLM Gateway says it cannot switch providers once the client has partial data. Portkey falls back but restarts the answer from the first token.
-- **An honest comparison:** the same outage suite runs against LiteLLM's proxy, with versions and configs published.
-- **A foundation:** Switchyard is the first project. Threadline, Groundtruth, Rowcall (the text-to-SQL agent), Casefile and Slotfill send their model calls through it, so its dashboard fills with real traffic and real cost per project as they get built.
+Dated 2026-10-22. Re-check every claim in this section in the month the results are published, and date them in the README.
 
-### 2.1 How it differs from Dastar
+- **API7's AISIX gateway** already continues a broken stream on a fallback model. It sends the original messages, an instruction not to repeat, and the delivered text as a trailing assistant message, and it skips continuation for tool calls, reasoning and structured output.
+- **LiteLLM** used to do the same with an assistant prefill. That returned a 400 on Claude 4.6 and later, so its chat completions endpoint now re-raises the error once any content has streamed (the maintainer says v1.97.0 or later). Its `/v1/responses` endpoint still resumes mid-stream.
+- **LLM Gateway** says the error reaches the client once data has been sent.
 
-[Dastar](https://github.com/Zhan017/dastar) proves correctness inside one database: no double booking under races, idempotent retries, background jobs, hashed keys with capabilities, and load and exhaustion measurements. Switchyard proves resilience across unreliable networks and providers: health tracking, circuit breakers, hedging, retry budgets and finishing a broken stream. The two repos should show different skills, so Switchyard deliberately leaves out what Dastar already shows:
+So mid-stream continuation exists. What nobody publishes is how good the joins are: how often a reader can tell the answer was interrupted, by strategy and provider pair, and what each failover costs. That measurement, and an open harness anyone can rerun, is Switchyard's contribution.
 
-| Already shown in Dastar | What Switchyard does instead |
+### 2.1 What it proves
+
+- **Reliability engineering for LLMs:** circuit breakers with active probes, retry budgets, failover, stall detection and cost attribution. These are standard system design interview topics.
+- **Current provider knowledge:** the Claude 4.6 prefill change, usage missing on cut streams, error events inside a 200 stream, all pinned by contract tests on recorded real streams.
+- **Honest evaluation:** a seam-quality table with confidence intervals, two judges from different model families checked against hand labels, and the misses published.
+- **A foundation:** Threadline, Groundtruth, Rowcall, Casefile and Slotfill send their model calls through Switchyard, so its dashboard fills with real traffic and real cost per project as they get built.
+
+### 2.2 How it differs from Dastar
+
+[Dastar](https://github.com/Zhan017/dastar) proves correctness inside one database. Switchyard proves resilience across unreliable networks and providers. Switchyard deliberately leaves out what Dastar already shows:
+
+| Already shown or planned in Dastar | What Switchyard does instead |
 | --- | --- |
-| Idempotency keys with stored outcomes, a sweeper worker, and a planned outbox publisher with backoff and dead letters | No request queue and no background jobs. When every provider is down, requests fail fast with 503 and `Retry-After` |
-| Hashed API keys with capabilities and venue scope, plus admin routes to manage them | Tenants and their keys come from the config file. No key-management API |
-| Planned per-key request rate limits | Only LLM-specific limits: tokens per minute and dollar budgets |
-| An open-loop load harness with seeded arrival plans, saturation and pool-exhaustion runs | One small overhead measurement. The outage suite is the evidence |
+| Idempotency keys, a sweeper worker, a planned outbox publisher with backoff and dead letters | No request queue and no background jobs. When every provider is down, requests fail fast with 503 and `Retry-After` |
+| Hashed API keys with capabilities, and admin routes to manage them | Tenants and keys come from the config file. No key-management API |
+| Per-key rate limits, per-key token buckets and an LLM daily spend cap | Token limits and dollar budgets are stretch goals, first in line to cut after hedging |
+| An open-loop load harness | One small overhead measurement. The outage suite and the seam evaluation are the evidence |
+| OTLP traces to Grafana Cloud with token and cost on spans | Prometheus and one Grafana dashboard. Tracing is a stretch goal |
 | Invariants enforced by Postgres | Postgres only stores request and attempt records |
 | TypeScript | Python |
 
-They connect through one integration. Dastar's agent milestone plans an OpenAI-compatible provider adapter and its own LLM circuit breaker. Pointing that adapter at Switchyard makes Dastar Switchyard's first real client and keeps provider failover out of Dastar.
+The two repos share conventions on purpose: the same verdict exit codes (0 pass, 1 fail or invalid run, 2 usage error, 3 inconclusive), a LIMITATIONS file and ADRs. The subjects differ: network faults and seam quality here, database faults and agent claims there.
 
-The two repos keep the same evidence conventions on purpose: the same verdict exit codes (0 pass, 1 fail or invalid run, 3 inconclusive), a LIMITATIONS file and ADRs.
+They connect through one integration. Dastar's agent milestone plans an Anthropic adapter first and an OpenAI-compatible adapter second, so Dastar can route through Switchyard once its second adapter exists. Dastar's design also plans its own LLM circuit breaker. When Dastar routes through Switchyard, Dastar keeps only a request timeout, so two breakers don't stack and trip on each other's 503s.
 
-## 3. Decisions (made 2026-10-19)
+## 3. Decisions
 
 | Decision | Choice | Why | What it costs |
 | --- | --- | --- | --- |
-| Language | Python 3.12, FastAPI, asyncio | Main stack, fastest to ship, matches the other five projects | Overhead in milliseconds, not microseconds. Don't compete on raw speed. |
-| Provider access | Own adapters over httpx | Full control of streams, required for continuation, avoids the "wrapper around LiteLLM" look | Four providers instead of a hundred |
-| Headline feature | Mid-stream failover | Rare and measurable | Continuation quality varies by provider |
-| Baseline | Same outage suite against LiteLLM's proxy | Answers "why not LiteLLM?" with data | LiteLLM must be configured fairly |
-| Shared state | Redis | Atomic counters; breaker state shared across replicas | One more service |
-| Durable records | Postgres | Request, attempt and job records; cost queries | Write volume, handled by batching |
+| Language | Python 3.12, FastAPI, asyncio | Main stack, fastest to ship, matches the other five projects | Overhead in milliseconds, not microseconds |
+| Provider access | Own adapters over httpx | Full control of streams, required for continuation strategies | Fewer providers |
+| Providers in v0.1 | OpenAI and Anthropic, plus `mockllm` | The two keys available; both families matter for the seam pairs and the judges | No local model until stretch |
+| Headline | Measured comparison of continuation strategies | The feature exists elsewhere; the measurement doesn't | The result may be negative, and is published either way |
+| JSON answers | Buffer the whole answer; on failure, restart cleanly on the next provider | A continued JSON fragment can't be validated, and JSON clients rarely need token streaming | No streaming for JSON requests |
+| Judges | One OpenAI and one Anthropic model, each judging every item, checked against 50 hand labels | Only these two keys; two families let self-preference be measured instead of hidden | Twice the judge cost, still a few dollars |
+| Order of work | Seam test on real providers in week 1, before gateway work | The headline risk is found out first | Gateway work starts a week later |
+| Targets | Pass when the lower bound of the 95% interval clears the target | A flat 99.5% on 100 requests is decided by one failure | Larger request counts per scenario |
+| Reasoning models | Not in v1 route groups | Their long silent thinking looks like a stall | Fewer models covered |
+| Baseline | LiteLLM's proxy, pinned, two configs, both endpoints | Answers "why not LiteLLM?" fairly | LiteLLM must be configured and described fairly |
+| Shared state | Redis, with an in-process fallback | Breakers shared across replicas; no single point of failure | Two code paths for state |
+| Durable records | Postgres | Request and attempt records; cost queries | Write volume, handled by batching |
 | Config | YAML validated with Pydantic, hot reload | Policy changes without a deploy | |
-| Deployment | Local Docker Compose plus a recorded video | No hosting cost | No public live demo in v1 |
-| Overlap with Dastar | No request queue, no key-management API, no generic request rate limits, a small load test only | Dastar already shows these; the two repos should show different skills | Some realism lost; the README says why |
+| Deployment | Local Docker Compose plus a recorded video | No hosting cost | No public live demo |
+| Overlap with Dastar | Section 2.2 | The two repos should show different skills | Some realism lost; the README says why |
 
 ## 4. Scope
 
-### In v1
+### v0.1 (ship first)
 
-- `POST /v1/chat/completions` in OpenAI format: streaming and non-streaming, text and tool calls.
-- Providers: Anthropic, OpenAI, one OpenAI-compatible local server (Ollama on the Mac for development, vLLM optional), and `mockllm`.
-- Health tracking, circuit breakers, retries with a retry budget, fallback chains per request class, stall detection.
-- Mid-stream failover for text.
-- Hedged requests for the `interactive-fast` class.
-- Tenants and keys defined in config; per-tenant token-per-minute limits and dollar budgets.
-- Cost per tenant, feature and provider, including tokens wasted on failed attempts and hedges.
-- Prometheus metrics, OpenTelemetry traces, Grafana dashboards stored as code.
-- A chaos toolkit (`mockllm` plus a scenario runner) that works against any OpenAI-compatible gateway.
-- A seam quality evaluation for mid-stream failover.
+- `POST /v1/chat/completions` in OpenAI format, streaming and non-streaming, for text and JSON answers. Tool calls pass through with the rules in 7.6.
+- Adapters for OpenAI and Anthropic, plus `mockllm`.
+- Health tracking, circuit breakers with active probes, same-provider retries with a retry budget, failover down a route group, stall detection.
+- Mid-stream failover with the strategies in 7.6, and seam repair.
+- Tenants and features from config; cost per tenant, feature and provider, with estimated usage for cut streams.
+- Prometheus metrics and one Grafana dashboard.
+- `mockllm` and the `switchyard-chaos` scenario CLI.
+- Scenarios S1, S4, S5, S6 and S8.
+- The seam evaluation on real providers, and the LiteLLM baseline.
+- README, one diagram, a 90-second video, LIMITATIONS, ADRs.
 
-### Not in v1
+### v1 (after v0.1 ships)
 
-Semantic cache, routing by request complexity, PII redaction, embeddings, images and audio, multi-region, an admin UI beyond Grafana, a hosted public demo. See section 19 for stretch goals.
+- Scenarios S2, S7 and S10 (Redis unavailable).
+- The full seam evaluation: 200 prompts, both judges, 50 hand labels.
+- Tool-call failover rules covered by contract tests on recorded streams.
 
-Left out because Dastar already shows them (section 2.1): a queue for deferrable requests, idempotency keys, a key-management API, generic request rate limits, and an open-loop load harness.
+### Stretch (in this cut order: the first item is the first to drop)
+
+1. Hedged requests and S3.
+2. Dollar budgets, token-per-minute limits and S9.
+3. OpenTelemetry tracing.
+4. The chaos proxy in front of real providers (use recorded real streams replayed by `mockllm` instead).
+5. A local provider (Ollama or vLLM).
+6. Tool-call continuation across a mid-stream failover (v0.1 ends the stream cleanly instead).
+7. A k6 load test beyond the one overhead measurement.
+8. A blog post (the README results section is enough).
+9. AISIX as a second mid-stream baseline; a semantic cache.
+
+Never cut: the seam evaluation, the strategy comparison, S5 and S6 on real providers, the LiteLLM run and the "What didn't work" section.
+
+### Not in scope
+
+Embeddings, images, audio, multi-region, an admin UI beyond Grafana, a hosted demo, and reasoning models in v1 route groups.
 
 ## 5. Architecture
 
 ```mermaid
 flowchart LR
-  C[Client] --> A[API: auth, tenant, class]
-  A --> L[Limits: tokens per minute + budget]
-  L --> R[Router: route group to candidates]
-  R --> X[Attempt runner: retries, hedging, stall watch]
-  X --> P1[Anthropic adapter]
-  X --> P2[OpenAI adapter]
-  X --> P3[Local adapter]
+  C[Client] --> A[API: auth, tenant, feature]
+  A --> R[Router: route group to candidates]
+  R --> X[Attempt runner: retries, failover, stall watch]
+  X --> P1[OpenAI adapter]
+  X --> P2[Anthropic adapter]
   X --> P4[mockllm adapter]
-  X <--> S[Stream relay: emitted-text buffer, failover, seam repair]
+  X <--> S[Stream relay: emitted-text buffer, continuation strategy, seam repair]
   S --> C
-  X --> H[(Health + breakers in Redis)]
+  X --> H[(Health + breakers: in-process, synced to Redis)]
   H --> R
+  H --> PR[Prober: active probes while open]
   X --> K[Accounting] --> PG[(Postgres)]
-  X --> M[Prometheus metrics + OTel traces] --> G[Grafana, Jaeger]
+  X --> M[Prometheus] --> G[Grafana]
 ```
 
 | Component | Responsibility |
 | --- | --- |
-| API | Parse OpenAI-format requests, authenticate the tenant key, read the feature and class, assign a request id |
-| Limits | Per-tenant token buckets for tokens per minute, and dollar budgets |
-| Router | Turn a route group into an ordered candidate list; skip open breakers and models missing a needed capability |
-| Attempt runner | Run attempts with deadlines, retries, failover, hedging and stall detection |
+| API | Parse OpenAI-format requests, authenticate the tenant key, check the feature against the tenant's list, assign a request id |
+| Router | Turn a route group into an ordered candidate list; skip open breakers, cooldowns and models missing a needed capability |
+| Attempt runner | Run attempts with deadlines, same-provider retries, failover and stall detection |
 | Adapters | Translate the canonical request to each provider's wire format and back; declare capabilities per model |
-| Stream relay | Forward chunks, keep the text already sent, run mid-stream failover and seam repair |
-| Health and breakers | Sliding-window stats and breaker state per provider and model, shared through Redis |
-| Accounting | Tokens and cost per attempt and request; batched writes to Postgres |
+| Stream relay | Forward chunks, keep the text already sent, run the continuation strategy and seam repair, send heartbeats |
+| Health and breakers | Sliding-window stats and breaker state per provider and model, kept in process and synced through Redis |
+| Prober | Send small probe requests to open providers and close their breakers on recovery |
+| Accounting | Tokens and cost per attempt and request, exact or estimated; batched writes to Postgres |
 
 ## 6. API
 
 ### 6.1 Chat completions
 
-`POST /v1/chat/completions` takes an OpenAI request body. `model` is either a route group alias (for example `chat-smart`, `chat-fast`) or a concrete `provider/model`.
+`POST /v1/chat/completions` takes an OpenAI request body. `model` is a route group alias (for example `chat-smart`) or a concrete `provider/model`.
 
 | Header | Required | Meaning |
 | --- | --- | --- |
 | `Authorization: Bearer <tenant key>` | Yes | Identifies the tenant |
-| `X-Switchyard-Feature` | Yes | Feature name for cost attribution. Missing returns 400. |
+| `X-Switchyard-Feature` | Yes | Feature name for cost attribution. Must be in the tenant's list in config; any other value is recorded as `other` and counted |
 | `X-Request-Id` | No | Generated if absent, echoed in the response |
-| `X-Switchyard-Class` | No | `interactive` or `interactive-fast`. Default comes from tenant config. |
 
-**Non-streaming responses** use the OpenAI format plus a `switchyard` object: provider, model, attempts, failovers and `cost_usd`. The `X-Switchyard-Provider` header names the provider that served it.
+**Request fields:**
 
-**Streaming responses** use OpenAI server-sent events. The chunk `id` stays the same for the whole answer, even across a failover. On a failover Switchyard writes an SSE comment line, which clients ignore:
+| Field | Behavior |
+| --- | --- |
+| `n` greater than 1, `logprobs`, audio input or output | Rejected with 400 |
+| `seed` | Ignored, because a failover changes the model anyway |
+| `stop` | Passed through. A request with stop sequences is never continued mid-stream (a stop sequence could span the join); it gets the error strategy |
+| `response_format` (JSON or schema) | The whole answer is buffered; see 7.6 |
+| `tools`, `parallel_tool_calls` | Passed through; see 7.6 for failover rules |
+| `max_tokens` missing | A default per route group is applied |
+
+**Non-streaming responses** use the OpenAI format plus a `switchyard` object: served provider and model, attempts, failovers, strategy used, `cost_usd` and `usage_estimated`.
+
+**Streaming responses** use OpenAI server-sent events:
+
+- The chunk `id` stays the same for the whole answer. The `model` field shows the route group alias, because the serving model can change mid-answer. The final `switchyard` object names every model that served.
+- On a failover Switchyard writes an SSE comment line, which clients ignore: `: switchyard failover from=anthropic/<model> to=openai/<model> at_chars=1234 reason=stall strategy=instructed`.
+- While a failover or seam repair is in progress, it sends a `: heartbeat` comment every 3 s, so proxies and clients with idle timeouts don't drop the connection.
+- The final chunk carries `usage` (marked estimated when it is) and the `switchyard` summary.
+
+**Errors** use the OpenAI error shape. In a stream, the error is sent as exactly these two events, and a contract test checks that the official OpenAI Python and TypeScript SDKs raise a clean error on them and ignore the comment lines:
 
 ```
-: switchyard failover from=anthropic/<model> to=openai/<model> at_chars=1234 reason=stall
+data: {"error": {"message": "<text>", "type": "switchyard_error", "code": "<code>"}}
+
+data: [DONE]
 ```
-
-The final chunk carries `usage` and a `switchyard` summary.
-
-**Errors** use the OpenAI error shape:
 
 | Code | HTTP | When |
 | --- | --- | --- |
-| `rate_limited` | 429 + `Retry-After` | Tenant over its tokens per minute |
-| `budget_exceeded` | 429 | Tenant over its dollar budget |
-| `no_healthy_provider` | 503 + `Retry-After` | Every candidate failed or is open, or the retry budget is spent |
-| `upstream_rejected` | 400 | Provider rejected the request as invalid; passed through |
-| `content_filtered` | Provider's status | Passed through, never failed over |
+| `no_healthy_provider` | 503 + `Retry-After` | Every candidate failed, is open or is cooling down |
+| `deadline_exceeded` | 504, or an error event mid-stream | The request deadline passed |
+| `upstream_rejected` | 400 | The provider rejected the request as invalid; passed through |
+| `content_filtered` | The provider's status | A filter or refusal; passed through, never continued, never failed over |
+
+**Refusals and filters inside a 200 stream** are detected from Anthropic's `stop_reason: refusal` and OpenAI's `finish_reason: content_filter` or `refusal` field. They end the stream as they are.
 
 ### 6.2 Operations and admin
 
-Admin endpoints use a separate admin key. Tenants and their key hashes live in the config file; changing them is a config edit plus a reload, not an API call.
+Admin endpoints use a separate admin key. Tenants, keys and features live in the config file; changing them is a config edit plus a reload.
 
 - `GET /healthz`, `GET /readyz`, `GET /metrics`
-- `GET /admin/providers`: health and breaker state per provider and model
+- `GET /admin/providers`: health, breaker state and cooldowns per provider and model
 - `POST /admin/providers/{id}/breaker` with `{"force": "open" | "closed" | "auto"}`
-- `GET /admin/tenants/{id}`: token usage and budget used so far
 - `POST /admin/config/reload`
 
 ### 6.3 Chaos control (mockllm only)
 
 `POST /chaos` with `{"mode": ..., "params": ..., "duration_s": ...}`.
 
-Modes: `error_rate`, `status` (429, 500, 529), `latency_ms`, `ttft_ms`, `cut_after_tokens`, `stall_after_tokens`, `malformed_chunk`, `refuse_connections`, `flap` (with `period_s`).
+Modes: `error_rate`, `status` (429 with `Retry-After`, 500, 529), `ttft_ms`, `cut_after_tokens`, `stall_after_tokens`, `malformed_chunk`, `error_event` (an Anthropic-style error event inside a 200 stream), `refuse_connections`, `hang` (accept the connection and never answer), `flap` (with `period_s`), and `replay` (play back a recorded real stream, optionally cut at a given point).
 
 ## 7. Core behavior
 
-### 7.1 Request classes
+### 7.1 Timeouts
 
-Starting defaults, all in config and tuned with data:
+One request class in v0.1. Defaults live in config per route group:
 
-| Class | Deadline | Time-to-first-token budget | Retries | Hedging | Mid-stream failover | When everything fails |
-| --- | --- | --- | --- | --- | --- | --- |
-| `interactive-fast` | 10 s | 1.5 s | 1 retry, then failover | Yes | Yes | 503 within 1 s |
-| `interactive` | 120 s | 5 s | Failover down the chain | No | Yes | 503 with `Retry-After` |
-
-There is no deferrable class. Callers that can wait retry on 503 with `Retry-After`; durable background work belongs to the caller (Dastar shows that pattern).
+| Setting | Default | Notes |
+| --- | --- | --- |
+| Request deadline | 120 s | When it passes mid-stream, send the `deadline_exceeded` error event |
+| Time to first token | 5 s | Longer than this counts as a failure for health |
+| Stall timeout | 5 s between content deltas | Only content deltas reset it. Anthropic `ping` events and unknown event types don't |
+| Probe timeout | 5 s | See 7.4 |
 
 ### 7.2 Route groups and model capabilities
 
@@ -171,244 +220,255 @@ route_groups:
   chat-smart:
     - anthropic/<current mid-tier model>
     - openai/<current mid-tier model>
-    - local/<open model served by Ollama or vLLM>
-  chat-fast:
-    - openai/<small model>
-    - anthropic/<small model>
+    default_max_tokens: 1024
 models:
   anthropic/<current mid-tier model>:
     tools: true
     json: true
     max_context: 200000
-    sampling_params: false        # newest Claude models reject temperature/top_p; adapters drop them
-    continuation: instructed      # Claude 4.6+ rejects prefill with a 400
+    sampling_params: false     # newest Claude models reject temperature and top_p; the adapter drops them
+    continuation: instructed   # Claude 4.6 and later reject prefill with a 400
+  openai/<current mid-tier model>:
+    tools: true
+    json: true
+    continuation: instructed   # no documented continuation parameter
 ```
 
-Pick the exact models at build time: the cheapest capable model per tier.
+`continuation` is `native`, `instructed` or `none`, and the seam evaluation decides each value. Pick the exact models at build time. Cheap models tend to differ most in style, which affects seams, so the evaluation records the models it used.
 
-Candidate selection walks the chain in order. It skips models whose breaker is open and models missing a capability the request needs (tools, JSON mode, context length). A half-open model only receives probe traffic.
+Candidate selection walks the chain in order. It skips models whose breaker is open, models in a 429 cooldown, and models missing a capability the request needs.
 
 ### 7.3 Health tracking
 
-Kept per provider and model in Redis, so a gateway restart doesn't reset it:
+Per provider and model, kept in process and synced to Redis so replicas share it and a restart doesn't reset it:
 
 - 10-second buckets over a 60-second window.
-- Counts by outcome: `ok`, `timeout`, `rate_limited`, `server_error`, `connection`, `stall`, `content_filter`, `client_error`.
+- Counts by outcome: `ok`, `timeout`, `server_error`, `connection`, `stall`, `rate_limited`, `content_filter`, `client_error`.
 - Bucketed histograms of time to first token and total latency.
-
-Exposed through `/admin/providers` and Prometheus.
 
 ### 7.4 Circuit breaker
 
 ```mermaid
 stateDiagram-v2
   [*] --> closed
-  closed --> open: trip rule met
-  open --> half_open: open period ends
-  half_open --> closed: 3 probes succeed in a row
-  half_open --> open: any probe fails (open period doubles)
+  closed --> open: a trip rule is met
+  open --> open: a probe fails
+  open --> closed: 3 probes in a row succeed
 ```
 
-- **Trip rule:** within the window, at least 20 requests and at least 50% failed with retryable errors. Or p95 time to first token above the class budget for 2 windows in a row.
-- **Open period:** 30 s, doubling on repeated trips, capped at 5 min.
-- **Half-open:** at most 1 probe in flight and at most 5% of traffic. Closes after 3 successes in a row.
-- **Shared state:** stored in Redis and changed with a compare-and-set Lua script, so every replica agrees.
-- **What doesn't count:** client errors (400, 404, 413) and content filters never trip the breaker. 401 and 403 mark the API key as bad and raise an alert instead.
+- **Trip rules,** any one of:
+  - in the last 60 s, at least 10 requests and at least 40% of them failed with retryable errors (below S1's 50% error rate, so S1 trips reliably);
+  - 5 retryable failures in a row (so low real traffic can still trip it);
+  - p95 time to first token above its budget in two consecutive, non-overlapping 30-second periods.
+- **While open,** no user traffic goes to the provider. The prober sends a tiny request (`max_tokens: 1`) every 10 s, with a 5 s timeout. Three successful probes in a row close the breaker. There is no doubling backoff.
+- **Worst-case recovery,** from the moment the provider is healthy again:
+
+  ```
+  T_close ≤ P + (k − 1) × P + t_probe = 10 + 20 + 5 = 35 s
+  ```
+
+  where `P` is the probe interval, `k` the successes needed and `t_probe` the probe timeout. The S4 and S8 targets are derived from this.
+- **Probe cost:** 6 tiny requests a minute per open provider and model, recorded with cost class `probe`.
+- **429 with `Retry-After`** is a quota signal, not a health signal. It puts that provider and model in a cooldown until the given time, separate from the breaker, and doesn't count toward the trip rules.
+- **Not counted:** client errors (400, 404, 413), content filters and refusals. 401 and 403 mark the API key as bad and raise an alert.
+- **Shared state:** breaker state is changed in Redis with a compare-and-set Lua script, and each replica keeps an in-process copy. If Redis is unreachable, each replica decides from its own copy (fail open) until Redis returns.
 - Every transition is logged, counted in metrics, and can be forced from the admin API.
 
-### 7.5 Retries and the retry budget
+### 7.5 Retries and failover
 
-- **Retryable:** connection errors, timeouts, 5xx, 529, 429. A 429 whose `Retry-After` is longer than the remaining deadline fails over immediately instead of waiting.
-- **Not retryable:** 400, 401, 403, 404, 413, content filters and refusals.
-- **Never fail over a safety refusal.** Sending a refused request to another provider to get around its filter is a policy decision, not a reliability feature. Switchyard returns the refusal.
-- **Backoff:** exponential with full jitter (base 200 ms, cap 2 s) when retrying the same provider. Failover to the next candidate is immediate.
-- **Retry budget:** retries plus failovers may not exceed 20% of requests in a rolling minute. This stops retry storms when everything is down. When the budget runs out, requests fail fast with 503 and `Retry-After`.
-- **Attempts:** at most 3 per request, configurable per class.
+- **Same-provider retries** happen only before the first token, only for connection errors, timeouts, 5xx and 529, at most once per attempt, with exponential backoff and full jitter (base 200 ms, cap 2 s).
+- **Retry budget:** same-provider retries may add at most 20% load to one provider and model, measured over a rolling minute. It protects a struggling provider from being hit again. When it is spent, the runner fails over instead of retrying.
+- **Failover** to the next healthy candidate is immediate and is not limited by the retry budget. It is bounded by the attempt cap (3 attempts per request) and by the breakers. Skipping an open or cooling-down candidate is not an attempt.
+- **Never fail over a refusal or a content filter.** Sending a refused request to another provider to get around its filter is a policy decision, not a reliability feature.
+- A unit test replays S1's arrival pattern against this policy math before any networking exists, and shows S1's target is reachable.
 
-### 7.6 Stall detection
+### 7.6 Mid-stream failover
 
-A time-to-first-token timeout per class, plus an inter-chunk timeout during streaming (default 10 s). A stall counts as a failure for health and triggers mid-stream failover.
+**Goal:** when a stream breaks after the client has received part of the answer, finish it on another provider in the way that reads most seamlessly for that provider pair, and measure how well that worked.
 
-### 7.7 Hedged requests (`interactive-fast` only)
+**Strategies** (what the seam evaluation compares):
 
-- If the primary hasn't produced a first token after `hedge_after_ms`, Switchyard sends the same request to the next healthy candidate. The default is the primary's rolling p90 time to first token, with a 300 ms floor.
-- The first one to produce a token wins. The loser's connection is closed.
-- Hedges are capped at 5% of the class's traffic.
-- The loser's tokens are recorded as hedge cost. The README reports hedge cost next to the p99 improvement.
+| Strategy | How it works | Who does this today |
+| --- | --- | --- |
+| E, error | Stop and send the error event | LiteLLM chat completions (v1.97 and later), LLM Gateway |
+| R, restart | Start the answer again from the top on the fallback; the client sees the beginning twice | The restart approach some gateways use |
+| N, native continuation | The partial answer goes in as a trailing assistant message and the model continues it. vLLM needs `continue_final_message: true` and `add_generation_prompt: false`. Claude 4.6 and later reject it with a 400. OpenAI accepts a trailing assistant message but has no documented continuation, so the model may start a new reply | AISIX; LiteLLM before v1.97 |
+| I, instructed | The original messages, then an assistant message with the full partial answer, then a user message: "Your previous message was cut off. Continue from exactly where it stopped. The last characters were: «last 200 characters». Output only the continuation." This is the pattern Anthropic documents for Claude 4.6 and later, and it also works on OpenAI | Not documented by any gateway checked |
+| I+S, instructed with seam repair | I, plus the seam repair below | Switchyard |
 
-### 7.8 Mid-stream failover (the headline feature)
-
-**Goal:** when a stream breaks after the client has received part of the answer, the client gets the rest of the same answer from another provider, with no error and no repeated text.
+The production default per model is the strategy that measures best, set through `continuation` in config.
 
 **Flow**
 
 1. The relay keeps `emitted_text` (what the client already received) and the type of content block in progress.
-2. A failure is detected: a provider error event (Anthropic sends `event: error` with `overloaded_error`), a dropped connection, an invalid chunk, or a stall.
-3. If `emitted_text` is empty, it's an ordinary failover (7.5).
-4. Otherwise, pick the next candidate and build a continuation request:
-   - **Native continuation**, where the server supports continuing a final assistant message (vLLM's `continue_final_message`; check Ollama's behavior at build time): the original messages plus an assistant message containing `emitted_text`.
-   - **Instructed continuation**, for Claude 4.6 and later and for OpenAI: the original messages plus a user message containing the partial answer and an instruction to continue. Anthropic documents this pattern for its newer models, which reject prefill with a 400:
-     > Your previous response was interrupted and ended with: <emitted_text>. Continue from exactly where it stopped. Output only the continuation. Don't repeat any text or add a preface.
-   - `max_tokens` is reduced by the tokens already sent.
-5. **Seam repair** runs on the first ~200 characters of the continuation before anything is forwarded:
-   - Strip a preface ("Sure,", "Continuing:") using a short pattern list.
-   - Remove overlap: find the longest suffix of `emitted_text` that is a prefix of the continuation (at least 8 characters) and cut it.
-   - Fix whitespace at the join, including answers cut mid-word.
-   - Record how long this buffering added (seam latency).
-6. Write the SSE failover comment, keep the same chunk `id`, sum `usage` across both providers, and record the cost of both attempts.
-7. Allow at most 2 mid-stream failovers per request. If all fail, send an OpenAI-style error event, then `[DONE]`.
+2. A failure is detected: a provider error event inside a 200 stream (Anthropic sends `event: error` with `overloaded_error`), a dropped connection, an invalid chunk, or a stall. Unknown event types are ignored, as Anthropic's docs ask.
+3. If nothing has been sent yet, it's an ordinary failover (7.5).
+4. Otherwise, pick the next candidate and build the request for the configured strategy. `max_tokens` is reduced by the tokens already sent.
+5. Send `: heartbeat` comments every 3 s until the continuation's first content is ready.
+6. Run seam repair, then forward. Write the failover comment, keep the same chunk `id`, sum usage across attempts, and record each attempt's cost.
+7. Allow at most 2 mid-stream failovers per request. If all fail, send the error event.
 
-**Tool calls, reasoning and JSON**
+**Seam repair**
 
-- **Tool-call deltas are held until the call is complete,** then forwarded as one chunk. If the stream dies mid-call, the partial call is dropped and the answer continues from the last text. Anthropic's docs note that tool-use and thinking blocks can't be partially recovered. Tradeoff: tool calls reach the client later; measure by how much.
-- **Reasoning content** isn't forwarded or carried across in v1. The fallback model may reason differently from the first one.
-- **JSON mode:** the continuation instruction asks for valid JSON to continue. The final output is validated, and failures are counted.
+- Normalize whitespace and case before matching.
+- Remove exact overlap: the longest suffix of `emitted_text`, at least 3 tokens, that is also a prefix of the continuation.
+- Remove a paraphrased restart: if the continuation's first sentence overlaps the last sentence of `emitted_text` with a token-overlap ratio of 0.6 or more, cut the continuation at the end of that sentence.
+- Strip a leading preface ("Sure,", "Continuing:") by a short pattern list.
+- Fix whitespace at the join, including answers cut mid-word.
+- Buffer at most the continuation's first sentence or 200 characters, whichever comes first, and record the added delay as seam latency.
+
+**JSON answers.** When `response_format` asks for JSON or a schema, the relay buffers the whole answer and streams nothing until it is complete and valid. Any failure is then a clean failover before the first byte. No JSON answer is ever continued. LIMITATIONS says so, and JSON is reported separately in the evaluation.
+
+**Tool calls**
+
+- Tool-call deltas are forwarded only once a call is complete.
+- If at least one complete tool call has been forwarded and the stream then dies, end the stream with `finish_reason: tool_calls` and don't continue. The client will run the tools and call back anyway.
+- If the failure is inside the first tool call and no text was sent, it's an ordinary failover.
+- If text was sent and a tool call was partial, send the error event.
+- Measure how much the buffering delays tool calls.
 
 **Known limits** (these go in the README's tradeoffs section)
 
 - Style can shift when the answer moves to a different provider.
-- Instructed continuation may paraphrase or repeat; seam repair reduces this but doesn't remove it.
-- A continuation re-sends the whole prompt plus the partial answer as input tokens, so each failover costs extra.
+- Continuation may paraphrase or repeat; seam repair reduces this, and the evaluation reports how much.
+- A continuation re-sends the whole prompt plus the partial answer as input tokens, so each failover costs extra; the evaluation reports how much.
 
-### 7.9 Token limits and budgets
+### 7.7 Cost accounting
 
-Only LLM-specific limits. Generic request-rate limiting belongs in front of the gateway, and Dastar already plans it.
+- Always send `stream_options.include_usage` upstream to OpenAI.
+- A cut stream usually has no final usage: OpenAI documents that an interrupted stream may miss its usage chunk, and Anthropic's cumulative usage normally arrives near the end. For cut attempts, estimate output tokens with a local tokenizer over the text received, add a stated safety margin, and set `usage_estimated = true`. Exact and estimated cost are reported separately.
+- `prices.yaml` holds, per provider and model: input, output, cached-input and cache-write prices per million tokens, long-context price tiers, and an effective date.
+- Every attempt has a `role` (primary, retry, failover, continuation, probe) and its tokens are split by `cost_class`: `served`, `wasted` (a failed attempt, or overlap trimmed by seam repair) or `probe`.
+- Once a month, compare totals with the providers' billing pages, with an expected error band stated in advance.
 
-- **Token buckets per tenant** for tokens per minute, implemented as Redis Lua scripts so they stay atomic across replicas.
-- **Token limits reserve up front:** prompt tokens plus `max_tokens`, estimated before the call and reconciled with actual usage after. Over the limit returns 429 with `Retry-After`.
-- **Dollar budgets,** daily and monthly per tenant:
-  - At 80%: warn through a log line, a metric and an optional webhook.
-  - At 100%: block with `budget_exceeded`.
-  - The check uses worst-case reserved cost before the call and reconciles after.
-  - Acceptance: no tenant ever exceeds its budget by more than one request's maximum cost.
+### 7.8 Tenants and features
 
-### 7.10 Cost accounting
+Tenants, key hashes and each tenant's list of features live in `config/switchyard.yaml`. A feature header not on the list is recorded as `other`, so a buggy client can't create unbounded metric series.
 
-- `prices.yaml` holds, per provider and model: input, output and cached-input price per million tokens, plus an effective date.
-- Every attempt is recorded with tokens, cost, outcome and a kind: `served`, `wasted` (failed attempt or trimmed overlap) or `hedge`.
-- Prometheus counter: `switchyard_cost_usd_total{tenant, feature, provider, model, kind}`.
-- Once a month, check by hand against the real providers' billing pages.
+### 7.9 When Redis is unavailable
+
+- Breakers and health: each replica decides from its in-process copy (fail open) and resyncs when Redis returns.
+- Redis calls for a request are batched into one Lua script where possible, to protect the overhead target.
+- S10 tests a 60-second Redis outage (v1).
+
+### 7.10 Config reload
+
+A reload validates the new file first and is refused if it's invalid. Requests in flight finish under the old config. A model removed from config loses its breaker state; a new model starts closed.
 
 ## 8. Data model (Postgres)
 
-Tenants, their key hashes, token limits and budgets live in `config/switchyard.yaml`. Postgres holds only records:
-
 ```
-requests(id, tenant_id, feature, class, route_group, status, started_at, finished_at,
-         ttft_ms, total_ms, input_tokens, output_tokens, cost_usd,
-         failovers, midstream_failovers, error_code)
-attempts(id, request_id, n, provider, model, kind, started_at, ttft_ms, ended_at, outcome,
-         input_tokens, output_tokens, cost_usd, emitted_chars_before)
-         -- kind: primary | retry | failover | hedge | continuation
+requests(id, tenant, feature, route_group, status, started_at, finished_at,
+         ttft_ms, total_ms, served_provider, served_model, strategy,
+         input_tokens, output_tokens, cost_usd, usage_estimated,
+         failovers, midstream_failovers, seam_latency_ms, seam_action,
+         prompt_hash, prompt_chars, response_chars, error_code)
+attempts(id, request_id, n, role, provider, model, started_at, ttft_ms, ended_at,
+         outcome, input_tokens, output_tokens, wasted_tokens, cost_usd,
+         usage_estimated, emitted_chars_before)
 breaker_events(id, provider_model, from_state, to_state, reason, at)
 ```
 
 - Prompts and answers aren't stored by default, only a hash and a length. A tenant can opt in to debug storage.
-- Writes are batched (flush every second or every 500 rows), so logging never blocks a request. If Postgres is down, metrics keep flowing and dropped rows are counted. This is a documented tradeoff.
+- Rows are kept 30 days.
+- Writes are batched (every second or every 500 rows), so logging never blocks a request. If Postgres is down, metrics keep flowing and dropped rows are counted.
 
 ## 9. Observability
 
-**Prometheus metrics**
+**Prometheus metrics** (labels are bounded: tenant and feature come from config, unknown values become `other`):
 
-- `switchyard_requests_total{tenant, feature, class, route_group, status}`
-- `switchyard_attempts_total{provider, model, kind, outcome}`
-- `switchyard_ttft_seconds`, `switchyard_request_seconds` (histograms by provider and class)
+- `switchyard_requests_total{tenant, feature, route_group, status}`
+- `switchyard_attempts_total{provider, model, role, outcome}`
+- `switchyard_ttft_seconds`, `switchyard_request_seconds` (histograms by provider)
 - `switchyard_gateway_overhead_seconds` (histogram)
-- `switchyard_breaker_state{provider_model}` (0 closed, 1 half-open, 2 open) and `switchyard_breaker_transitions_total`
-- `switchyard_failovers_total{from, to, phase}` where phase is `before_first_token` or `midstream`
-- `switchyard_seam_repair_total{action}` where action is `overlap_trimmed`, `preface_stripped` or `none`
-- `switchyard_hedges_total{outcome}` where outcome is `won`, `lost` or `cancelled`
-- `switchyard_retry_budget_exhausted_total`
-- `switchyard_rate_limited_total{tenant}`, `switchyard_budget_blocked_total{tenant}`
-- `switchyard_cost_usd_total{tenant, feature, provider, model, kind}`
+- `switchyard_breaker_state{provider_model}` and `switchyard_breaker_transitions_total`
+- `switchyard_cooldowns_total{provider_model}`
+- `switchyard_failovers_total{from, to, phase, strategy}` where phase is `before_first_token` or `midstream`
+- `switchyard_seam_repair_total{action}` where action is `overlap_trimmed`, `paraphrase_trimmed`, `preface_stripped` or `none`
+- `switchyard_retry_budget_exhausted_total{provider_model}`
+- `switchyard_cost_usd_total{tenant, feature, provider, model, cost_class, estimated}`
 
-**Traces:** OpenTelemetry spans for request, auth, limits, route, each attempt and the stream. Attributes: tenant, feature, provider, model, tokens, cost and failover reason. Exported to Jaeger in Compose.
+**One Grafana dashboard,** provisioned from JSON: requests per second by provider, error rate, p95 time to first token, breaker timeline, failovers with mid-stream shown separately, cost per tenant and feature (served, wasted and probe), and scenario start and end annotations.
 
 **Logs:** JSON, one line per request and one per breaker transition, each with the request id.
 
-**Grafana dashboards,** provisioned from JSON:
+## 10. Outage scenarios
 
-- Operations: requests per second by provider, error rate, p95 time to first token, breaker timeline, failovers (mid-stream shown separately), retry budget used.
-- Cost: per tenant, feature and hour; wasted vs served; budget used.
-- Chaos: the same panels, annotated with scenario start and end times.
+**Common rules**
 
-## 10. Chaos toolkit and scenarios
+- Each scenario runs with 5 seeds. Every scenario file states its request rate, duration, request count and topology (which upstreams are mock and which are real).
+- **Success** means the response completed with `finish_reason` of `stop` or `length` and no error event.
+- **Repeated text** means any span of 8 or more tokens in the continuation that also appears in the last 300 tokens of `emitted_text`.
+- **Verdict:** pass when the lower bound of the 95% interval clears the target; inconclusive when there are too few samples. Exit codes: 0 pass, 1 fail or invalid run, 2 usage error, 3 inconclusive.
+- Request lengths come from a synthetic distribution; `mockllm` ignores prompt content, so real prompts only matter for the seam evaluation.
+- The scenario files and targets are committed and tagged before the first run, so the history proves they were fixed in advance.
 
-**Components**
+| ID | Release | What happens | Rate and duration | Target |
+| --- | --- | --- | --- | --- |
+| S1 | v0.1 | Primary returns 500 on 50% of requests | 10 req/s for 120 s, mock upstreams | Success lower bound ≥ 99%; breaker opens |
+| S4 | v0.1 | Primary refuses connections for 5 min, then recovers | 10 req/s for 7 min, mock upstreams | Success lower bound ≥ 99%; breaker opens within 10 s; closes within 45 s of recovery (35 s by formula, plus margin) |
+| S5 | v0.1 | Primary's stream is cut at a random 20 to 80% of the answer | (a) 5 req/s for 120 s on mocks; (b) recorded real streams, cut and continued on real providers | (a) completion lower bound ≥ 99%. (b) a measurement, not pass or fail: repeated-text rate and seamless rate by strategy |
+| S6 | v0.1 | Primary stops sending tokens mid-stream without closing | Same as S5 | Same as S5; stall detected within the stall timeout plus 1 s |
+| S8 | v0.1 | All providers fail for 3 min, in two variants: refusing connections, and hanging | 10 req/s for 5 min, mock upstreams | Refusing: 503 within 1 s. Hanging: 503 within the time-to-first-token budget plus 1 s. Attempts ≤ 1.2× requests. Normal service within 45 s of recovery |
+| S2 | v1 | Primary returns 429 with `Retry-After: 30` for 2 min | 10 req/s for 4 min | Success lower bound ≥ 99%; no same-provider retries during the cooldown |
+| S7 | v1 | Primary alternates 20 s healthy and 20 s down for 5 min | 10 req/s for 6 min | Success lower bound ≥ 98%; at most 2 breaker transitions per cycle |
+| S10 | v1 | Redis unavailable for 60 s | 10 req/s for 3 min | Success lower bound ≥ 99%; breakers keep working from local state |
+| S3, S9 | Stretch | Latency spike with hedging; noisy tenant with budgets | | Defined when those features are built |
 
-- **`mockllm`:** a FastAPI fake provider that speaks the OpenAI and Anthropic streaming formats, including Anthropic error events. It generates seeded, deterministic text at a set number of tokens per second and is controlled through `/chaos`.
-- **Chaos proxy:** sits between Switchyard and a real provider and can cut a stream after N bytes or stall it. This produces realistic seams with real models.
-- **`switchyard-chaos` CLI:** runs a scenario file against any OpenAI-compatible base URL with replayed traffic, switches faults on and off on schedule, and records results from the client's side:
-  - success
-  - time to first token and total time
-  - visible errors and repeated text
-  - whether the answer was complete
-
-  It writes JSON and a Markdown report and uses Dastar's exit codes (0 pass, 1 fail or invalid run, 3 inconclusive). Because it only needs a base URL, the same run works against LiteLLM.
-
-  Dastar's harness injects faults into a database (races, pool exhaustion, migrations under load). This one injects faults into the network between a gateway and its providers. It reuses Dastar's conventions, not its scenarios.
-
-**Scenarios.** These are fixed now, before any code, so the results aren't self-graded. The targets are goals. Publish the real numbers whether they're met or not.
-
-| ID | Scenario | What happens | Target |
-| --- | --- | --- | --- |
-| S1 | Error burst | Primary returns 500 on 50% of requests for 60 s | Interactive success ≥ 99.5% |
-| S2 | Rate-limit storm | Primary returns 429 with `Retry-After: 30` for 2 min | Success ≥ 99.5%; attempts ≤ 1.3× requests |
-| S3 | Latency spike | Primary's time to first token rises by 8 s for 2 min | `interactive-fast` p95 time to first token within 2× normal |
-| S4 | Full outage | Primary refuses connections for 5 min, then recovers | Success ≥ 99.5%; breaker opens within 10 s; closes within 60 s of recovery |
-| S5 | Mid-stream crash | Primary's stream is cut at a random 20 to 80% of the answer | ≥ 95% of answers complete with no visible error; repeated text in < 2% |
-| S6 | Stall | Primary stops sending tokens mid-stream without closing | Same as S5; detected within the stall timeout |
-| S7 | Flapping | Primary alternates 20 s healthy and 20 s down for 5 min | Breaker doesn't thrash; success ≥ 99% |
-| S8 | Everything down | All providers fail for 3 min, then recover | Requests fail fast (< 1 s) with 503 and `Retry-After`; attempts stay ≤ 1.2× requests (no retry storm); normal service within 60 s of recovery |
-| S9 | Noisy tenant | One tenant sends 10× its tokens-per-minute limit | Other tenants' p95 changes by less than 10%; the noisy tenant gets 429s; no budget overrun beyond one request |
-
-**Traffic:** replay about 1,000 prompts sampled from a public dataset of real user prompts (check the license, or publish only sample ids). Mix short and long answers, with and without tools.
+**`switchyard-chaos` CLI** runs a scenario file against any OpenAI-compatible base URL, switches faults on and off on schedule, records results from the client's side, and writes JSON and a Markdown report. Because it only needs a base URL, the same run works against LiteLLM.
 
 ## 11. Baseline comparison
 
-- **Systems:**
-  - (a) direct provider calls using the SDK's default retries, with no gateway
-  - (b) LiteLLM's proxy with fallbacks, retries and cooldowns set as its docs describe
-  - (c) Switchyard
-- **Same everything:** scenarios S1 to S9, providers, traffic and hardware. Versions are pinned, and every config is committed under `baselines/`.
-- **Fairness rules:**
-  - Configure LiteLLM using its documented reliability settings.
-  - Publish the exact config and invite corrections.
-  - Report where LiteLLM wins: provider coverage, maturity, features Switchyard doesn't have.
-- **Output:** one table per scenario with success %, p95 time to first token, visible errors, repeated-text %, attempts per request and wasted cost.
+- **LiteLLM,** pinned to the latest release at build time, with the exact version in the results. If a newer release behaves differently by publication, report both.
+- **Two configs:** LiteLLM's defaults, and a tuned config whose cooldown, retry and timeout values match Switchyard's as closely as its settings allow. Publish a table mapping each Switchyard policy to the LiteLLM setting used.
+- **Both endpoints:** chat completions, and `/v1/responses`, which still resumes mid-stream.
+- **Report honestly:** on chat completions, S5 and S6 are reported as "error, by design", not as a loss. LiteLLM's wins (provider coverage, maturity, features Switchyard lacks) come first in the results.
+- **Invite review:** open a GitHub discussion on LiteLLM asking for a review of the tuned config, and link it from the results.
+- **Same everything else:** scenarios, providers, traffic and hardware. Every config is committed under `baselines/`.
 
-## 12. Seam quality evaluation
+## 12. Seam quality evaluation (the headline)
 
-- **Prompt set:** 200 prompts that need long answers (at least 300 tokens): 40% prose, 25% code, 20% lists and steps, 15% JSON.
-- **Provider pairs:** Claude to GPT, GPT to Claude, Claude to Claude, local to Claude. For each prompt and pair:
-  - Generate an uninterrupted reference answer.
-  - Cut it at a random point between 20% and 80%.
-  - Continue it with the fallback model.
-- **Automatic checks:** repeated text across the join, preface leaks, format validity (JSON parses, code fences balanced, numbered lists continue correctly) and length compared with the reference.
-- **Judge:** blind pairwise comparison of stitched vs uninterrupted, run in both orders, by a model from a third provider family. "Seamless" means the judge can't tell them apart better than chance, or rates the stitched answer at least 4 out of 5 for coherence. Hand-label 50 to check the judge's agreement; Groundtruth formalizes this later.
-- **Report:**
-  - Seamless rate by provider pair and content type.
-  - Seam latency: time from failure detected to the first continued character.
-  - Extra cost per failover.
+### 12.1 Week 1 seam test (go or no-go)
+
+A script with no gateway: 30 prompts, two provider pairs, cut each reference answer at a random point, and continue it with strategies R, I and I+S (and N where a provider supports it). It prints the joins side by side. Budget: under $5 and 2 to 4 hours.
+
+Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, the project still ships, and the headline becomes the honest negative result plus the strategy table.
+
+### 12.2 Full evaluation
+
+- **Prompt set:** 200 prompts that need long answers (at least 300 tokens): 50% prose, 30% code, 20% lists and steps. JSON is reported separately, since JSON answers are buffered and restarted.
+- **Provider pairs:** Claude to GPT, GPT to Claude, Claude to Claude, GPT to GPT.
+- **Cuts:** a seeded random point between 20% and 80% of each reference answer, saved with the data.
+- **Strategies:** R, N where supported, I and I+S, on the same cuts.
+- **Primary metric:** per item, a judge sees the uninterrupted reference and the stitched answer in both orders and answers "which one was interrupted and resumed?" The item is seamless if the judge is wrong, or inconsistent across the two orders. Report the seamless rate with a 95% interval.
+- **Seam-local view:** the same question on 300 characters either side of the join, so length and style differences elsewhere don't give the answer away.
+- **Judges:** one OpenAI model and one Anthropic model; every item is judged by both. Report each judge's rate, their agreement, and self-preference: each judge's seamless rate on continuations from its own family against the other family's.
+- **Human check:** hand-label 50 items. Publish judge numbers only if a judge's Cohen's kappa against the hand labels is at least 0.6.
+- **Secondary metrics:** a 1 to 5 coherence score; automatic checks for repeated text, preface leaks and length against the reference.
+- **Cost:** extra input and output tokens per failover, by strategy.
+- **Report:** one table of strategy by provider pair, with intervals, seam latency and extra cost.
 
 ## 13. Performance targets
 
-- Gateway overhead p95 under 10 ms for non-streaming requests, and under 10 ms added to time to first token when streaming. Measure against `mockllm` with fixed latency at 200 requests per second on one 4-vCPU container.
+- Gateway overhead p95 under 10 ms for non-streaming requests, and under 10 ms added to time to first token when streaming, against `mockllm` with fixed latency at 200 requests per second on one 4-vCPU container.
+- Measure this in week 1 on a stub, so a miss changes the design early instead of the README late.
 - Report the maximum requests per second before overhead p95 passes 25 ms.
-- Keep the load test small: 5,000+ requests with mixed tenants and classes, using k6. Don't build a load harness; Dastar already shows open-loop load methodology in depth. Switchyard's evidence is the outage suite.
-- Be upfront in the README: Go gateways claim microsecond overhead in their own benchmarks. Switchyard targets milliseconds and competes on behavior under failure.
+- Be upfront in the README: Go gateways claim microsecond overhead. Switchyard targets milliseconds and competes on behavior under failure.
 
 ## 14. Testing
 
 - **Unit** (pytest, Hypothesis):
   - breaker state machine, with property tests
-  - token buckets and the retry budget
-  - seam repair, as a table of overlap and preface cases
-  - price math and config validation
-- **Contract:** adapter tests against recorded real streams, including Anthropic error events and OpenAI tool-call deltas.
-- **Integration:** `docker compose up`, then scenarios S1 to S9 against `mockllm` with shortened durations, run in CI.
-- **Load:** run by hand before each results update.
-- **CI** (GitHub Actions): ruff, mypy in strict mode on `src`, unit and integration tests, image build. Badges go in the README.
+  - the retry budget, including the S1 replay from 7.5
+  - seam repair, as a table of cases: exact overlap, paraphrased restarts, prefaces, mid-word cuts
+  - price math with estimated usage
+  - config validation and reload
+- **Contract,** on recorded real streams:
+  - Anthropic error events inside a 200 stream, `ping` events, refusals
+  - OpenAI tool-call deltas keyed by `index`, the usage chunk, content filters
+  - the official OpenAI Python and TypeScript SDKs against Switchyard's comments and error event
+- **Integration:** `docker compose up`, then the v0.1 scenarios against `mockllm` with shortened durations, in CI.
+- **CI** (GitHub Actions): ruff, mypy in strict mode on `src`, unit, contract and integration tests, image build.
 
 ## 15. Repository layout
 
@@ -416,6 +476,7 @@ breaker_events(id, provider_model, from_state, to_state, reason, at)
 switchyard/
   README.md
   SPEC.md
+  LIMITATIONS.md
   docker-compose.yml
   pyproject.toml
   config/
@@ -423,81 +484,97 @@ switchyard/
     prices.yaml
   src/switchyard/
     api/            routes, schemas, auth
-    core/           canonical types, router, class policies, retries, hedging
-    providers/      base.py, anthropic.py, openai.py, openai_compat.py, mock.py
-    resilience/     health.py, breaker.py, ratelimit.py, budget.py
-    streaming/      relay.py, failover.py, seam.py
-    accounting/     pricing.py, usage.py
-    observability/  metrics.py, tracing.py, logging.py
+    core/           canonical types, router, retries, failover
+    providers/      base.py, openai.py, anthropic.py, mock.py
+    resilience/     health.py, breaker.py, prober.py
+    streaming/      relay.py, strategies.py, seam.py
+    accounting/     pricing.py, usage.py, tokenize.py
+    observability/  metrics.py, logging.py
     config.py
-  mockllm/          fake provider with chaos controls
+  mockllm/          fake provider with chaos controls and stream replay
   chaos/            scenario files, runner CLI, report generator
-  eval/seam/        prompt set, runner, judge
-  baselines/        litellm/ config and compose file
-  grafana/          dashboards and provisioning
+  eval/seam/        week 1 spike, prompt set, cuts, runner, judges, hand labels
+  baselines/        litellm/ configs and compose file
+  grafana/          dashboard and provisioning
   tests/            unit/, contract/, integration/
   docs/             architecture.md, decisions/, results/
 ```
 
 ## 16. Milestones
 
-The guide estimates 2 to 3 weeks. With mid-stream failover and the LiteLLM baseline added, plan for **4 to 5 weeks at 10 to 12 hours a week**.
+Planned in hours, at 10 to 12 hours a week.
 
-| Week | Milestone | Done when |
-| --- | --- | --- |
-| 0 (2 days) | Skeleton | Compose starts the gateway, Redis, Postgres, Prometheus, Grafana, Jaeger and `mockllm`; CI is green; config loads and validates |
-| 1 | Proxy works | Streaming and non-streaming through `mockllm`, OpenAI, Anthropic and the local model; auth, tenant and feature; cost per request in Postgres; `/metrics` |
-| 2 | Resilience | Health windows, breakers, retry budget, fallback chains, stall detection; S1 to S4, S6 and S7 pass against `mockllm` |
-| 3 | Mid-stream | Failover engine, seam repair, tool-call buffering; S5 passes; first seam evaluation on real providers |
-| 4 | Limits and hedging | Token limits, budgets, hedging; S8 and S9 pass; Grafana dashboards; overhead test |
-| 5 | Proof | LiteLLM baseline runs; results tables; README, architecture diagram, 90-second video, blog post |
+| Week | Hours | Milestone | Done when |
+| --- | --- | --- | --- |
+| 1 | 10 to 12 | Seam test and overhead stub | The week 1 seam test report with joins and a go or no-go note; overhead measured on a stub |
+| 2 | 10 to 12 | Proxy | OpenAI and Anthropic adapters, streaming and non-streaming, text and JSON; `mockllm`; tenants and features; cost with estimated usage; `/metrics`; CI green |
+| 3 | 10 to 12 | Resilience | Health, breaker with probes, retries, failover, stall detection; S1, S4 and S8 pass on mocks |
+| 4 | 10 to 12 | Mid-stream | Strategies, seam repair, tool-call rules, heartbeats; S5 and S6 pass on mocks; the first seam evaluation on real providers |
+| 5 | 10 to 12 | v0.1 release | LiteLLM baseline with two configs and both endpoints; results tables; README, diagram, video, LIMITATIONS; tag v0.1 |
 
-## 17. Finish line
+v0.1 is about 50 to 60 hours. v1 (S2, S7, S10, the full 200-prompt evaluation with hand labels) adds about 20 to 30 hours. Stretch work comes after that, in the cut order from section 4.
 
-- [ ] All 9 scenarios run from one command, with results published as tables
-- [ ] Mid-stream results: completion rate, repeated-text rate and seamless rate by provider pair
-- [ ] LiteLLM's proxy compared on the same suite, with versions and configs committed
+## 17. Finish line for v0.1
+
+- [ ] The week 1 seam test report is committed, with its go or no-go note
+- [ ] S1, S4, S5, S6 and S8 run from one command, with results published as tables and intervals
+- [ ] The seam table: strategy by provider pair, with seamless rate, repeated-text rate, seam latency and extra cost
+- [ ] LiteLLM compared with two configs on both endpoints, with the version and the settings mapping committed
 - [ ] Gateway overhead and maximum requests per second measured
-- [ ] Cost per tenant and feature on the dashboard, including wasted cost
-- [ ] S8: fast 503s and no retry storm while every provider is down
-- [ ] 90-second video: healthy traffic, a provider killed mid-answer, the answer finishing on another provider, the breaker tripping, then recovery
-- [ ] README opens with the headline numbers and includes a "What didn't work" section
+- [ ] Cost per tenant and feature on the dashboard, with estimated and exact cost shown separately
+- [ ] 90-second video: healthy traffic, a provider killed mid-answer, the answer finishing on another provider, the breaker opening, then recovery
+- [ ] README opens with the headline numbers, credits AISIX and LiteLLM with dates, and has a "What didn't work" section
 
 ## 18. Risks
 
 | Risk | Mitigation |
 | --- | --- |
-| Instructed continuation repeats or paraphrases | Seam repair; measure and report honestly by provider pair |
-| Provider APIs change (Claude 4.6+ already dropped prefill) | Capability flags per model; contract tests on recorded streams |
-| The LiteLLM comparison looks unfair | Documented config, pinned versions, invited corrections, LiteLLM's wins reported |
-| Self-graded scenarios | Scenarios and targets fixed in this spec before code; misses published |
-| Scope creep | Non-goals list; stretch work only after the finish line |
-| API spend | `mockllm` for most tests; real providers only for the seam evaluation and smoke tests. Rough estimate: under $50 including reruns |
-| Python throughput | Measure it; several uvicorn workers; all shared state in Redis so replicas scale out |
-| Repeating Dastar | Section 2.1 lists what is left out and why; review new features against it before adding them |
+| Seam quality turns out poor | Found in week 1; the project still ships with the negative result and the strategy table |
+| Competitor behavior changes before publication | Claims are dated and re-checked in the month of publication |
+| Judge bias | Two judges from different families, self-preference reported, kappa of 0.6 against hand labels required |
+| Provider APIs change (Claude 4.6 already dropped prefill) | Capability flags per model; contract tests on recorded streams |
+| The LiteLLM comparison looks unfair | Two configs, a published settings mapping, both endpoints, "by design" wording, invited review, wins reported first |
+| Self-graded scenarios | Scenarios and targets tagged in git before the first run; confidence intervals; misses published |
+| Redis as a single point of failure | In-process fallback; S10 |
+| Scope creep | v0.1 is fixed; stretch work follows the cut order in section 4 |
+| API spend | `mockllm` for scenarios; real providers for the seam test (under $5), the evaluation and smoke tests |
+| Python throughput | Measured in week 1 on a stub; Redis calls batched |
+| Repeating Dastar | Section 2.2; review new features against it before adding them |
 
-## 19. Stretch goals (after the finish line)
+## 19. Stretch goals
 
-- A semantic cache. Key it on model, parameters, tools, tenant and prompt version, and keep false hits under 1% as measured by a judge.
-- A router that sends simple requests to cheaper models.
-- PII redaction in logs.
-- Portkey's open-source gateway as a second baseline.
-- A hosted demo with a public read-only dashboard.
-- Dastar's agent as the first real client, through its OpenAI-compatible adapter.
+In cut order, first to drop at the top: hedged requests (with a delay from a long baseline window, capped at half the time-to-first-token budget, and only within one route group tier) and S3; dollar budgets and token limits (with a worst-case cost over all allowed attempts, a default `max_tokens`, a local tokenizer with a margin, and UTC periods) and S9; OpenTelemetry tracing; the chaos proxy; a local provider; tool-call continuation; a k6 load test; a blog post; AISIX as a second baseline; a semantic cache.
 
 ## 20. Open questions
 
-- Exact models for each route group. Choose at build time, and note that the newest Claude models reject sampling parameters.
-- Local model: Ollama on the Mac is easy; vLLM on a rented GPU is closer to production and supports native continuation.
-- Gemini as a fourth provider?
-- Which public prompt dataset to replay, and whether its license allows publishing samples.
+- The exact models for each route group, chosen at build time.
+- The exact LiteLLM version, chosen at build time.
+- Whether to add a third judge family later, if another key becomes available.
+
+## 21. Changes from v1
+
+Made after a review of v1 on 2026-10-22.
+
+- The headline is now a measured comparison of continuation strategies. The claim that popular gateways lack mid-stream continuation was wrong: AISIX does it, and LiteLLM did it and removed it from chat completions.
+- The retry budget limits same-provider retries only; failover is bounded by the attempt cap and breakers. The breaker trips at 40%, has a consecutive-failure rule, treats 429 as a cooldown, and recovers through active probes with a stated worst-case time.
+- v0.1 is cut to fit 50 to 60 hours, with the seam test in week 1. Hedging, budgets, token limits, tracing, the chaos proxy and the local provider moved to stretch.
+- JSON answers are buffered and restarted, never continued. Tool-call failover rules are defined.
+- Continuation requests are specified per provider; seam repair handles paraphrased restarts and sends heartbeats.
+- Cut streams get estimated usage, flagged as estimated.
+- Redis has an in-process fallback. Metric labels are bounded. Scenario targets use confidence intervals, fixed rates and tagged files.
+- The LiteLLM comparison uses two configs and both endpoints.
+- The seam evaluation uses an interrupted-or-not judgment in both orders, two judges, a seam-local view and a kappa check.
 
 ## References
 
-- Anthropic, Streaming messages: error events and error recovery (capture and resume; for Claude 4.6+ use a user message): https://platform.claude.com/docs/en/build-with-claude/streaming
+- Anthropic, Streaming messages: error events, `ping`, cumulative usage, error recovery for Claude 4.5 vs 4.6 and later: https://platform.claude.com/docs/en/build-with-claude/streaming
 - Anthropic, Using the Messages API: prefill not supported on Claude 4.6 and later: https://platform.claude.com/docs/en/build-with-claude/working-with-messages
+- OpenAI, Chat completions API reference: chunk fields, the usage chunk, usage missing on interrupted streams, tool-call deltas: https://developers.openai.com/api/reference/resources/chat
+- vLLM, OpenAI-compatible server (`continue_final_message`): https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/
+- Ollama, OpenAI compatibility: https://docs.ollama.com/api/openai-compatibility
+- API7 AISIX, Mid-stream fallback: https://docs.api7.ai/ai-gateway/routing/mid-stream-fallback
+- LiteLLM issue #27967 (prefill-based mid-stream fallback, 400 on Claude 4.6 and later): https://github.com/BerriAI/litellm/issues/27967
+- LiteLLM PR #34627 (chat completions re-raise once content has streamed; `/v1/responses` still resumes): https://github.com/BerriAI/litellm/pull/34627
+- LiteLLM, Proxy reliability docs: https://docs.litellm.ai/docs/proxy/reliability.md
 - LLM Gateway, How we handle LLM provider failover: https://llmgateway.io/blog/how-we-handle-llm-provider-failover
-- Portkey gateway, streaming: https://mintlify.wiki/portkey-AI/gateway/features/streaming
-- LiteLLM rate limits, budgets, fallbacks and cooldowns (Fast.io): https://fast.io/resources/litellm-rate-limit/
-- Top 5 open-source LLM gateways compared, 2026 (by Bifrost's maker): https://getmaxim.ai/articles/top-5-open-source-llm-gateways-compared-2026/
-- BASWE guides: "Build These Six Projects" (Self-Healing LLM Gateway), "15 AI Engineering Projects" (#11 LLM Gateway, #7 Semantic Cache), "Six projects that prove you can do the job" (Warmstart)
+- Dastar README and system design: https://github.com/Zhan017/dastar
