@@ -43,6 +43,7 @@ class Join:
     actions: list[str] = field(default_factory=list)
     repeated_text: bool = False
     preface: bool = False
+    meta_reply: bool = False
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0

@@ -5,8 +5,11 @@ random point between 20% and 80% of its length, as if the stream had died there.
 fallback model then finishes it with each strategy:
 
     R    restart: the fallback answers again from the top
-    I    instructed: the fallback is told the answer was cut off and asked to continue
+    I    instructed: the partial answer goes in as the model's own earlier turn, and the
+         model is told it was cut off and asked to continue
     I+S  the same continuation as I, after seam repair
+    A    anchored: the partial answer is quoted in the user turn, the model is asked to
+         start by copying its last few words, and seam repair trims them off
     N    native: DeepSeek's beta prefix completion continues the partial answer
 
 Real run (needs keys in .env):  uv run python -m eval.seam.spike
@@ -35,13 +38,25 @@ from eval.seam.fake import FakeClient
 from eval.seam.metrics import approx_tokens, repeated_span
 from eval.seam.records import Join, Prompt, Reference
 from eval.seam.report import write_outputs
-from switchyard.streaming.seam import has_preface, repair
+from switchyard.streaming.seam import has_preface, is_meta_reply, repair
 
 HERE = Path(__file__).parent
 INSTRUCTION = (
     "Your previous message was cut off. Continue from exactly where it stopped. "
     "The last characters were: «{tail}». Output only the continuation."
 )
+# The partial answer is quoted rather than presented as the model's own turn. In the first
+# run, Claude refused 6 of 30 continuations of GPT's text, saying it had no record of
+# writing it. Copying the last words gives seam repair an exact point to cut at.
+ANCHORED = (
+    "{prompt}\n\n---\n"
+    "An earlier answer to this request was cut off partway through. Here it is:\n"
+    "<partial_answer>\n{partial}\n</partial_answer>\n\n"
+    "Continue that answer from exactly where it stops, keeping its style and formatting. "
+    "Start your reply by copying the last few words of the partial answer exactly, then "
+    "keep going. Output only the continuation, with no preface or comments."
+)
+ANCHOR_EXTRA_TOKENS = 40
 # A rough stand-in for token boundaries: a word with its leading space, long words split
 # in two, punctuation on its own. Streams die between tokens, so cuts land on these.
 _PIECE = re.compile(r"\s*(?:\w{1,8}|[^\w\s])")
@@ -114,7 +129,12 @@ def cut_point(text: str, rng: random.Random) -> int:
 
 
 def strategies_for(client: Client) -> list[str]:
-    return ["R", "I", "I+S", *(["N"] if client.supports_prefix else [])]
+    return ["R", "I", "I+S", "A", *(["N"] if client.supports_prefix else [])]
+
+
+def calls_per_join(client: Client) -> int:
+    """R, I (shared by I+S), A, and N where supported."""
+    return 3 + int(client.supports_prefix)
 
 
 def estimate_cost(settings: Settings, prompts: list[Prompt]) -> float:
@@ -130,8 +150,8 @@ def estimate_cost(settings: Settings, prompts: list[Prompt]) -> float:
             total += (prompt_tokens * price.input + out * price.output) / 1e6
         for _, fallback in settings.pairs:
             price = settings.models[fallback].price
-            calls = 3 if settings.models[fallback].provider == "deepseek" else 2
-            continued_input = prompt_tokens + emitted + 120
+            calls = 4 if settings.models[fallback].provider == "deepseek" else 3
+            continued_input = prompt_tokens + emitted + 150
             total += (prompt_tokens * price.input + out * price.output) / 1e6  # R
             total += (calls - 1) * (continued_input * price.input + out * price.output) / 1e6
     return total
@@ -193,7 +213,12 @@ class Runner:
             [user(prompt.text), assistant(emitted), user(INSTRUCTION.format(tail=tail))],
             remaining,
         )
-        calls: dict[str, Any] = {"R": restart, "I": instructed}
+        anchored = self.call(
+            fallback,
+            [user(ANCHORED.format(prompt=prompt.text, partial=emitted))],
+            remaining + ANCHOR_EXTRA_TOKENS,
+        )
+        calls: dict[str, Any] = {"R": restart, "I": instructed, "A": anchored}
         if client.supports_prefix:
             calls["N"] = self.call(
                 fallback, [user(prompt.text), assistant(emitted)], remaining, prefix=True
@@ -212,13 +237,14 @@ class Runner:
                 continue
             assert isinstance(source, Completion)
             item.continuation_raw = source.text
-            if strategy == "I+S":
-                fixed = repair(emitted, source.text, context=prompt.text)
+            if strategy in ("I+S", "A"):
+                fixed = repair(emitted, source.text, context=prompt.text, anchored=strategy == "A")
                 item.continuation, item.actions = fixed.text, list(fixed.actions)
             else:
                 item.continuation = source.text
             item.repeated_text = repeated_span(emitted, item.continuation)
             item.preface = has_preface(item.continuation)
+            item.meta_reply = is_meta_reply(source.text)
             item.input_tokens, item.output_tokens = source.input_tokens, source.output_tokens
             # I and I+S share one call, so its cost is counted once, on I.
             item.cost_usd = 0.0 if strategy == "I+S" else source.cost(price)
@@ -240,9 +266,7 @@ async def run(
 ) -> tuple[list[Reference], list[Join]]:
     runner = Runner(settings, clients)
     primaries = sorted({primary for primary, _ in settings.pairs})
-    continued_calls = sum(
-        2 + int(clients[fallback].supports_prefix) for _, fallback in settings.pairs
-    )
+    continued_calls = sum(calls_per_join(clients[fallback]) for _, fallback in settings.pairs)
     runner.total = len(prompts) * (len(primaries) + continued_calls)
 
     ref_tasks = [runner.reference(p, family) for p in prompts for family in primaries]
@@ -293,12 +317,15 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="use a fake provider, no keys")
     parser.add_argument("--limit", type=int, help="only the first N prompts")
     parser.add_argument("--budget", type=float, help="override budget_usd from the config")
+    parser.add_argument("--seed", type=int, help="override the seed, for fresh cut points")
     parser.add_argument("--config", type=Path, default=HERE / "config.yaml")
     parser.add_argument("--out", type=Path, help="output folder")
     args = parser.parse_args()
 
     load_dotenv(Path.cwd() / ".env")
     settings = load_settings(args.config)
+    if args.seed is not None:
+        settings.seed = args.seed
     prompts = load_prompts(HERE / "prompts.yaml", args.limit)
     budget = args.budget if args.budget is not None else settings.budget_usd
 

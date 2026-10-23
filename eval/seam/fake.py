@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import random
+import re
 
 from eval.seam.clients import Completion, Message
 from eval.seam.metrics import approx_tokens
@@ -66,7 +67,13 @@ class FakeClient:
         ).hexdigest()
         rng = random.Random(seed)
         prompt = messages[0]["content"]
-        if len(messages) == 1:
+        quoted = re.search(r"<partial_answer>\n(.*)\n</partial_answer>", prompt, re.DOTALL)
+        if quoted:
+            # Anchored: copy the last few words, as asked, then continue.
+            partial = quoted.group(1)
+            copied = " ".join(partial.split()[-rng.randint(1, 5) :])
+            text = copied + _continuation(rng, partial, prompt, native=True)
+        elif len(messages) == 1:
             text = _answer(rng, prompt)
         else:
             text = _continuation(rng, messages[1]["content"], prompt, native=prefix)

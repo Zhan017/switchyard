@@ -309,6 +309,7 @@ stateDiagram-v2
 | N, native continuation | The partial answer goes in as a trailing assistant message and the model continues it. vLLM needs `continue_final_message: true` and `add_generation_prompt: false`. DeepSeek documents it as beta prefix completion (`prefix: true`). Claude 4.6 and later reject it with a 400. OpenAI accepts a trailing assistant message but has no documented continuation, so the model may start a new reply | AISIX; LiteLLM before v1.97 |
 | I, instructed | The original messages, then an assistant message with the full partial answer, then a user message: "Your previous message was cut off. Continue from exactly where it stopped. The last characters were: «last 200 characters». Output only the continuation." This is the pattern Anthropic documents for Claude 4.6 and later, and it also works on OpenAI | Not documented by any gateway checked |
 | I+S, instructed with seam repair | I, plus the seam repair below | Switchyard |
+| A, anchored | The partial answer is quoted inside the user turn instead of being presented as the model's own earlier turn, and the model is asked to start by copying its last few words. Seam repair then cuts at the copied text, so the join point is exact. Added after the first week 1 run, where Claude refused 6 of 30 instructed continuations of GPT's text, saying it had no record of writing it | Switchyard |
 
 The production default per model is the strategy that measures best, set through `continuation` in config.
 
@@ -324,13 +325,15 @@ The production default per model is the strategy that measures best, set through
 
 **Seam repair**
 
-Implemented in `src/switchyard/streaming/seam.py`, in this order:
+Implemented in `src/switchyard/streaming/seam.py`, in this order. Rules marked *(run 1)* were added after reading the first week 1 run, and each is pinned by a test built from the real join:
 
+- Detect a meta reply ("I can't pick up mid-sentence from that earlier message") and treat it as a failed attempt, never as text to send. *(run 1)*
 - Strip a leading preface ("Sure,", "Continuing:", a leading ellipsis) by a short pattern list.
 - Inside an open code fence, strip a restarted fence line (`` ```python ``).
-- Remove exact overlap: the longest suffix of `emitted_text`, at least 3 tokens with at least 2 words, that is also a prefix of the continuation, compared without case. If the answer was cut mid-word and the continuation repeats it in full, keep only the rest of that word.
-- Remove a paraphrased restart: if at least 60% of the cut sentence's words appear in the continuation's first sentence, find where the restatement reaches the cut point (the last three, then two, words the client saw) and keep only what follows. If no such point is found, keep the text and record `paraphrase_suspected`.
-- Fix the join: drop doubled spaces or newlines; if a word meets a word, either finish the cut word (when the joined word appears in the prompt or answer) or insert a space; add a space after sentence punctuation outside code.
+- Remove exact overlap: the longest suffix of `emitted_text`, at least 3 words, that is also a prefix of the continuation, compared without case. With anchored continuation one word is enough, since the copy is expected. If the answer was cut mid-word and the continuation repeats it in full, keep only the rest of that word.
+- Remove a restarted line: if the continuation starts the interrupted line again ("    for" then "    for (const x of xs)"), keep only what is new. Short lines count only when they are a list or table marker such as "-", "3." or "|". *(run 1)*
+- Remove a paraphrased restart, outside code only: if at least 60% of the cut sentence's words appear in the continuation's first sentence, find where the restatement reaches the cut point (the last three, then two, words the client saw) and keep only what follows. If no such point is found, keep the text and record `paraphrase_suspected`.
+- Fix the join: drop doubled spaces or newlines; if a word meets a word, either finish the cut word (when the joined word appears in the prompt or answer, or the cut word ends in a capital as in `HandlerF`) or insert a space; add a space after sentence punctuation outside code. In code, add the missing line break when the continuation starts an indented line, and a space after a keyword, `->`, `,` or a comment marker. In Markdown, fix a bold marker split across the join ("- *" then "**Title**"). *(run 1)*
 - Buffer at most the continuation's first sentence or 200 characters, whichever comes first, and record the added delay as seam latency.
 
 **JSON answers.** When `response_format` asks for JSON or a schema, the relay buffers the whole answer and streams nothing until it is complete and valid. Any failure is then a clean failover before the first byte. No JSON answer is ever continued. LIMITATIONS says so, and JSON is reported separately in the evaluation.
@@ -446,7 +449,7 @@ breaker_events(id, provider_model, from_state, to_state, reason, at)
 
 ### 12.1 Week 1 seam test (go or no-go)
 
-A script with no gateway (`eval/seam/spike.py`): 30 prompts and three provider pairs (Claude to GPT, GPT to Claude, Claude to DeepSeek), using `claude-haiku-5-5`, `gpt-6-luna` and `deepseek-flash` with thinking off. Cut each reference answer at a random point and continue it with strategies R, I and I+S, plus N on DeepSeek. It prints the joins side by side. Budget: under $5 and 2 to 4 hours.
+A script with no gateway (`eval/seam/spike.py`): 30 prompts and three provider pairs (Claude to GPT, GPT to Claude, Claude to DeepSeek), using `claude-haiku-5-5`, `gpt-6-luna` and `deepseek-flash` with thinking off. Cut each reference answer at a random point and continue it with strategies R, I, I+S and A, plus N on DeepSeek. It prints the joins side by side. Budget: under $5 and 2 to 4 hours.
 
 Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, the project still ships, and the headline becomes the honest negative result plus the strategy table.
 
@@ -455,7 +458,7 @@ Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, 
 - **Prompt set:** 200 prompts that need long answers (at least 300 tokens): 50% prose, 30% code, 20% lists and steps. JSON is reported separately, since JSON answers are buffered and restarted.
 - **Provider pairs:** Claude to GPT, GPT to Claude, Claude to DeepSeek, GPT to DeepSeek, Claude to Claude, GPT to GPT. N is measured on the DeepSeek pairs.
 - **Cuts:** a seeded random point between 20% and 80% of each reference answer, saved with the data.
-- **Strategies:** R, N where supported, I and I+S, on the same cuts.
+- **Strategies:** R, N where supported, I, I+S and A, on the same cuts.
 - **Primary metric:** per item, a judge sees the uninterrupted reference and the stitched answer in both orders and answers "which one was interrupted and resumed?" The item is seamless if the judge is wrong, or inconsistent across the two orders. Report the seamless rate with a 95% interval.
 - **Seam-local view:** the same question on 300 characters either side of the join, so length and style differences elsewhere don't give the answer away.
 - **Judges:** one OpenAI, one Anthropic and one DeepSeek model; every item is judged by all three. The headline number for each pair comes only from judges outside both of its families (for Claude to GPT, that's the DeepSeek judge), so every pair has a neutral score. Also report each judge's rate, their agreement, and self-preference: each judge's seamless rate on continuations from its own family against the others.

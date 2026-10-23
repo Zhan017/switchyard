@@ -11,11 +11,12 @@ from typing import Any
 
 from eval.seam.records import Join, Prompt, Reference, as_dict
 
-STRATEGY_ORDER = ["R", "I", "I+S", "N"]
+STRATEGY_ORDER = ["R", "I", "I+S", "A", "N"]
 STRATEGY_NAMES = {
     "R": "restart",
     "I": "instructed",
     "I+S": "instructed + seam repair",
+    "A": "anchored",
     "N": "native",
 }
 SHOW_CHARS = 240
@@ -80,6 +81,7 @@ def summarize(joins: list[Join]) -> list[dict[str, Any]]:
                     "errors": len(group) - len(ok),
                     "repeated_text_pct": _pct(sum(j.repeated_text for j in ok), len(ok)),
                     "preface_pct": _pct(sum(j.preface for j in ok), len(ok)),
+                    "meta_reply_pct": _pct(sum(j.meta_reply for j in ok), len(ok)),
                     "mean_cost_usd": round(sum(j.cost_usd for j in ok) / len(ok), 6) if ok else 0,
                     "mean_latency_s": round(sum(j.latency_s for j in ok) / len(ok), 2) if ok else 0,
                     "repair_actions": dict(actions.most_common()),
@@ -125,24 +127,28 @@ def render(
         "- **I, instructed:** the fallback gets the partial answer and is told to continue "
         "from exactly where it stopped.",
         "- **I+S:** the same text as I, after seam repair. The actions say what was fixed.",
+        "- **A, anchored:** the partial answer is quoted in the request, the fallback is "
+        "asked to start by copying its last few words, and seam repair cuts them off.",
         "- **N, native:** DeepSeek's beta prefix completion continues the partial answer directly.",
         "",
         "*Repeated text* means 8 or more words in a row that the reader already saw in the "
         "last 300 words. *Preface* means the continuation opens with something like "
-        '"Sure, here is the rest".',
+        '"Sure, here is the rest". *Meta reply* means the model talked about the task '
+        'instead of continuing ("I can\'t pick up mid-sentence...").',
         "",
         "## Summary",
         "",
-        "| Pair | Strategy | Joins | Errors | Repeated text | Preface | Cost per join "
-        "| Latency | Repair actions |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Pair | Strategy | Joins | Errors | Meta reply | Repeated text | Preface "
+        "| Cost per join | Latency | Repair actions |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in table:
         cost = "same call as I" if row["strategy"] == "I+S" else f"${row['mean_cost_usd']:.5f}"
         actions = ", ".join(f"{k} {v}" for k, v in row["repair_actions"].items()) or "none"
         lines.append(
             f"| {row['pair']} | {row['strategy']} | {row['joins']} | {row['errors']} "
-            f"| {row['repeated_text_pct']}% | {row['preface_pct']}% | {cost} "
+            f"| {row.get('meta_reply_pct', 0)}% | {row['repeated_text_pct']}% "
+            f"| {row['preface_pct']}% | {cost} "
             f"| {row['mean_latency_s']} s | {actions} |"
         )
     lines += [
@@ -152,8 +158,8 @@ def render(
         "",
         "## Go or no-go",
         "",
-        "_To fill in after reading the joins: does I+S read cleanly on most joins? Which "
-        "failures repeat, and does seam repair need another rule?_",
+        "_To fill in after reading the joins: do I+S and A read cleanly on most joins? "
+        "Which failures repeat, and does seam repair need another rule?_",
         "",
     ]
 
@@ -194,7 +200,9 @@ def _render_join(join: Join) -> list[str]:
         flags.append("repeated text")
     if join.preface:
         flags.append("preface")
-    if join.strategy == "I+S":
+    if join.meta_reply:
+        flags.append("meta reply")
+    if join.strategy in ("I+S", "A"):
         flags.append("actions: " + (", ".join(join.actions) or "none"))
     if join.finish_reason not in ("stop", "end_turn", "length", "max_tokens"):
         flags.append(f"finish: {join.finish_reason}")
