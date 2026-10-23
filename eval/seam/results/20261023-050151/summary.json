@@ -1,0 +1,149 @@
+{
+  "meta": {
+    "started": "2026-10-23T05:01:51+00:00",
+    "dry_run": false,
+    "seed": 7,
+    "prompts": 30,
+    "pairs": [
+      "claude-gpt",
+      "gpt-claude",
+      "claude-deepseek"
+    ],
+    "models": {
+      "claude": "claude-haiku-5-5",
+      "deepseek": "deepseek-flash",
+      "gpt": "gpt-6-luna"
+    },
+    "estimate_usd": 0.2651
+  },
+  "totals": {
+    "references": 60,
+    "reference_errors": 0,
+    "joins": 300,
+    "join_errors": 0,
+    "cost_usd": 0.1444
+  },
+  "table": [
+    {
+      "pair": "Claude to DeepSeek",
+      "strategy": "R",
+      "joins": 30,
+      "errors": 0,
+      "repeated_text_pct": 63.3,
+      "preface_pct": 0.0,
+      "mean_cost_usd": 0.00114,
+      "mean_latency_s": 6.86,
+      "repair_actions": {}
+    },
+    {
+      "pair": "Claude to DeepSeek",
+      "strategy": "I",
+      "joins": 30,
+      "errors": 0,
+      "repeated_text_pct": 16.7,
+      "preface_pct": 0.0,
+      "mean_cost_usd": 0.000826,
+      "mean_latency_s": 4.62,
+      "repair_actions": {}
+    },
+    {
+      "pair": "Claude to DeepSeek",
+      "strategy": "I+S",
+      "joins": 30,
+      "errors": 0,
+      "repeated_text_pct": 16.7,
+      "preface_pct": 0.0,
+      "mean_cost_usd": 0.0,
+      "mean_latency_s": 4.62,
+      "repair_actions": {
+        "space_inserted": 16,
+        "fence_stripped": 3,
+        "overlap_trimmed": 2
+      }
+    },
+    {
+      "pair": "Claude to DeepSeek",
+      "strategy": "N",
+      "joins": 30,
+      "errors": 0,
+      "repeated_text_pct": 10.0,
+      "preface_pct": 0.0,
+      "mean_cost_usd": 0.000758,
+      "mean_latency_s": 4.51,
+      "repair_actions": {}
+    },
+    {
+      "pair": "Claude to GPT",
+      "strategy": "R",
+      "joins": 30,
+      "errors": 0,
+      "repeated_text_pct": 43.3,
+      "preface_pct": 0.0,
+      "mean_cost_usd": 0.000253,
+      "mean_latency_s": 5.45,
+      "repair_actions": {}
+    },
+    {
+      "pair": "Claude to GPT",
+      "strategy": "I",
+      "joins": 30,
+      "errors": 0,
+      "repeated_text_pct": 6.7,
+      "preface_pct": 0.0,
+      "mean_cost_usd": 0.000235,
+      "mean_latency_s": 4.39,
+      "repair_actions": {}
+    },
+    {
+      "pair": "Claude to GPT",
+      "strategy": "I+S",
+      "joins": 30,
+      "errors": 0,
+      "repeated_text_pct": 6.7,
+      "preface_pct": 0.0,
+      "mean_cost_usd": 0.0,
+      "mean_latency_s": 4.39,
+      "repair_actions": {
+        "space_inserted": 14,
+        "overlap_trimmed": 1
+      }
+    },
+    {
+      "pair": "GPT to Claude",
+      "strategy": "R",
+      "joins": 30,
+      "errors": 0,
+      "repeated_text_pct": 36.7,
+      "preface_pct": 0.0,
+      "mean_cost_usd": 0.000536,
+      "mean_latency_s": 5.75,
+      "repair_actions": {}
+    },
+    {
+      "pair": "GPT to Claude",
+      "strategy": "I",
+      "joins": 30,
+      "errors": 0,
+      "repeated_text_pct": 13.3,
+      "preface_pct": 6.7,
+      "mean_cost_usd": 0.000281,
+      "mean_latency_s": 2.98,
+      "repair_actions": {}
+    },
+    {
+      "pair": "GPT to Claude",
+      "strategy": "I+S",
+      "joins": 30,
+      "errors": 0,
+      "repeated_text_pct": 13.3,
+      "preface_pct": 0.0,
+      "mean_cost_usd": 0.0,
+      "mean_latency_s": 2.98,
+      "repair_actions": {
+        "space_inserted": 18,
+        "preface_stripped": 2,
+        "fence_stripped": 1
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # Switchyard: spec
 
-Status: draft v2.1 · Owner: Zhan Kuatuly · Last updated: 2026-10-22 · Changes from v1 are listed in section 21.
+Status: v2.1, week 1 done · Owner: Zhan Kuatuly · Last updated: 2026-10-23 · Changes from v1 are listed in section 21.
 
 ## 1. Summary
 
@@ -453,6 +453,8 @@ A script with no gateway (`eval/seam/spike.py`): 30 prompts and three provider p
 
 Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, the project still ships, and the headline becomes the honest negative result plus the strategy table.
 
+**Result (2026-10-23): go.** One reader marked joins seamless at the join point: I+S 55 of 90 (61%), DeepSeek native 25 of 30 (83%). Claude refused 6 of 30 continuations of GPT's text, code joins were the weakest, and Markdown markers broke at the join. Seam repair rules and the anchored strategy (A) were added from these joins, so they are validated in the full evaluation, not here. Seam repair is frozen until then. Report: [`eval/seam/results/20261023-050151/report.md`](eval/seam/results/20261023-050151/report.md).
+
 ### 12.2 Full evaluation
 
 - **Prompt set:** 200 prompts that need long answers (at least 300 tokens): 50% prose, 30% code, 20% lists and steps. JSON is reported separately, since JSON answers are buffered and restarted.
@@ -471,7 +473,7 @@ Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, 
 ## 13. Performance targets
 
 - Gateway overhead p95 under 10 ms for non-streaming requests, and under 10 ms added to time to first token when streaming, against `mockllm` with fixed latency at 200 requests per second on one 4-vCPU container.
-- Measure this in week 1 on a stub, so a miss changes the design early instead of the README late.
+- Measure this early in week 2, on the first working proxy, so a miss changes the design early instead of the README late.
 - Report the maximum requests per second before overhead p95 passes 25 ms.
 - Be upfront in the README: Go gateways claim microsecond overhead. Switchyard targets milliseconds and competes on behavior under failure.
 
@@ -527,17 +529,17 @@ Planned in hours, at 10 to 12 hours a week.
 
 | Week | Hours | Milestone | Done when |
 | --- | --- | --- | --- |
-| 1 | 10 to 12 | Seam test and overhead stub | The week 1 seam test report with joins and a go or no-go note; overhead measured on a stub |
-| 2 | 10 to 12 | Proxy | OpenAI, Anthropic and DeepSeek adapters, streaming and non-streaming, text and JSON; `mockllm`; tenants and features; cost with estimated usage; `/metrics`; CI green |
+| 1 | 10 to 12 | Seam test | Done 2026-10-23: [report](eval/seam/results/20261023-050151/report.md) with joins and a go note. The overhead stub moved to week 2 |
+| 2 | 10 to 12 | Proxy | OpenAI, Anthropic and DeepSeek adapters, streaming and non-streaming, text and JSON; `mockllm`; tenants and features; cost with estimated usage; `/metrics`; gateway overhead measured early, so a miss changes the design; CI green |
 | 3 | 10 to 12 | Resilience | Health, breaker with probes, retries, failover, stall detection; S1, S4 and S8 pass on mocks |
-| 4 | 10 to 12 | Mid-stream | Strategies, seam repair, tool-call rules, heartbeats; S5 and S6 pass on mocks; the first seam evaluation on real providers |
+| 4 | 10 to 12 | Mid-stream | Strategies, seam repair, tool-call rules, heartbeats; S5 and S6 pass on mocks; the first seam evaluation on real providers, on fresh prompts and including A |
 | 5 | 10 to 12 | v0.1 release | LiteLLM baseline with two configs and both endpoints; results tables; README, diagram, video, LIMITATIONS; tag v0.1 |
 
 v0.1 is about 50 to 60 hours. v1 (S2, S7, S10, the full 200-prompt evaluation with hand labels) adds about 20 to 30 hours. Stretch work comes after that, in the cut order from section 4.
 
 ## 17. Finish line for v0.1
 
-- [ ] The week 1 seam test report is committed, with its go or no-go note
+- [x] The week 1 seam test report is committed, with its go or no-go note
 - [ ] S1, S4, S5, S6 and S8 run from one command, with results published as tables and intervals
 - [ ] The seam table: strategy by provider pair, with seamless rate, repeated-text rate, seam latency and extra cost
 - [ ] LiteLLM compared with two configs on both endpoints, with the version and the settings mapping committed
@@ -593,6 +595,12 @@ v2.1, the same day:
 - A DeepSeek judge added, so every pair has a judge from outside both of its families.
 - Two DeepSeek pairs added (6 in total), the week 1 test covers N, and the full evaluation has a budget cap.
 - OpenRouter was considered and left out as a provider, because it falls back between its own upstream hosts and would hide the failures Switchyard needs to see.
+
+After the week 1 seam test, 2026-10-23:
+
+- Week 1 result recorded in 12.1: go.
+- Strategy A (anchored) added to the comparison, and seam repair rules added from the run's joins (section 7.6).
+- The overhead stub moved from week 1 to early week 2.
 
 ## References
 

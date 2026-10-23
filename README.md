@@ -2,7 +2,7 @@
 
 An LLM gateway that keeps answers flowing when providers fail. When a provider dies halfway through a streamed answer, Switchyard finishes the answer on another provider, and measures how well each way of doing that works.
 
-**Status:** week 1 of 5. Before building the gateway, a small test checks how seamless the joins look when one model finishes another model's interrupted answer. The full plan is in [SPEC.md](SPEC.md).
+**Status:** week 2 of 5, building the proxy. Week 1 tested whether another model can finish an interrupted answer well enough to build on: [it can](eval/seam/results/20261023-050151/report.md). Read at the join point, DeepSeek's native continuation looked seamless on 25 of 30 joins, and instructed continuation with seam repair on 55 of 90. The full plan is in [SPEC.md](SPEC.md).
 
 ## The question
 
