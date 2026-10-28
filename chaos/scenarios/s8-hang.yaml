@@ -1,0 +1,40 @@
+id: S8-hang
+title: Every provider hangs for 3 minutes
+release: v0.1
+description: >-
+  After a healthy minute, both models accept requests and never answer, for 3 minutes.
+  Each attempt costs a full first-token timeout (5 s) until the breakers open, so the
+  first requests of the outage wait up to about 15 s. The target applies from 15 s into
+  the outage, once both breakers have had time to open; the first 15 s are reported in
+  the per-seed latency columns. After that, requests should get a 503 within the
+  first-token budget plus 1 s.
+topology:
+  gateway: Switchyard, route group `mock` (mock-a/mock first, then mock-b/mock)
+  primary: mockllm behind a gate, serving mock-a/mock
+  secondary: mockllm behind a gate, serving mock-b/mock
+traffic:
+  model: mock
+  rate_rps: 10
+  duration_s: 300
+seeds: [1, 2, 3, 4, 5]
+faults:
+  - upstream: primary
+    mode: hang
+    start_s: 60
+    duration_s: 180
+  - upstream: secondary
+    mode: hang
+    start_s: 60
+    duration_s: 180
+checks:
+  - kind: fast_failure
+    description: Requests from 15 s into the outage answered with 503
+    min: 0.99
+    max_s: 6
+    window: { from_s: 75, to_s: 240 }
+  - kind: attempt_ratio
+    description: Upstream attempts per request over the whole run, probes excluded
+    max: 1.2
+  - kind: recovery
+    description: Normal service after the providers recover
+    max_s: 45

@@ -1,0 +1,27 @@
+# Scenario tests: two gated mockllm servers, and probes every second so recovery is quick.
+providers:
+  mock-a:
+    type: openai
+    base_url: ${MOCKLLM_A_URL}/v1
+  mock-b:
+    type: openai
+    base_url: ${MOCKLLM_B_URL}/v1
+models:
+  mock-a/mock: {}
+  mock-b/mock: {}
+route_groups:
+  mock:
+    models: [mock-a/mock, mock-b/mock]
+    default_max_tokens: 32
+    ttft_timeout_s: 1.0
+    stall_timeout_s: 1.0
+    request_deadline_s: 10
+tenants:
+  - name: team-a
+    key_sha256: 5cbec0ae7e5d32e771ce65b153958d2da52b3f702fdc2867bae3de9e66b8ea9b # sy-dev-local-key
+    features: [chaos]
+admin_key_sha256: 7f9ce6a78a65dd67a21999c968266dc87302d59ece921c36a7bf82373df37ee8 # sy-admin-local-key
+prices_file: prices.yaml
+resilience:
+  probe_interval_s: 1
+  probe_timeout_s: 0.5

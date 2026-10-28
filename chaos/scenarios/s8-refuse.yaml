@@ -1,0 +1,38 @@
+id: S8-refuse
+title: Every provider refuses connections for 3 minutes
+release: v0.1
+description: >-
+  After a healthy minute, both models' servers refuse connections for 3 minutes. Nothing
+  can succeed, so the gateway should fail fast with 503 and Retry-After instead of making
+  clients wait, should not pile retries on dead providers, and should serve normally again
+  soon after they recover.
+topology:
+  gateway: Switchyard, route group `mock` (mock-a/mock first, then mock-b/mock)
+  primary: mockllm behind a gate, serving mock-a/mock
+  secondary: mockllm behind a gate, serving mock-b/mock
+traffic:
+  model: mock
+  rate_rps: 10
+  duration_s: 300
+seeds: [1, 2, 3, 4, 5]
+faults:
+  - upstream: primary
+    mode: refuse_connections
+    start_s: 60
+    duration_s: 180
+  - upstream: secondary
+    mode: refuse_connections
+    start_s: 60
+    duration_s: 180
+checks:
+  - kind: fast_failure
+    description: Requests during the outage answered with 503
+    min: 0.99
+    max_s: 1
+    window: { from_s: 60, to_s: 240 }
+  - kind: attempt_ratio
+    description: Upstream attempts per request over the whole run, probes excluded
+    max: 1.2
+  - kind: recovery
+    description: Normal service after the providers recover
+    max_s: 45

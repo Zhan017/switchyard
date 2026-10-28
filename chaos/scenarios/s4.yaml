@@ -1,0 +1,34 @@
+id: S4
+title: The primary refuses connections for 5 minutes, then recovers
+release: v0.1
+description: >-
+  After a healthy minute, the first model's server refuses every TCP connection and
+  resets the open ones for 5 minutes, then accepts again. Requests should fail over to
+  the second model, the breaker should open quickly, and probes should close it within
+  the worst case of 35 s after recovery (spec 7.4), plus margin.
+topology:
+  gateway: Switchyard, route group `mock` (mock-a/mock first, then mock-b/mock)
+  primary: mockllm behind a gate, serving mock-a/mock
+  secondary: mockllm behind a gate, serving mock-b/mock
+traffic:
+  model: mock
+  rate_rps: 10
+  duration_s: 420
+seeds: [1, 2, 3, 4, 5]
+faults:
+  - upstream: primary
+    mode: refuse_connections
+    start_s: 60
+    duration_s: 300
+checks:
+  - kind: success_rate
+    description: Requests that completed
+    min: 0.99
+  - kind: breaker_opens
+    description: The primary's breaker opens after the outage starts
+    model: mock-a/mock
+    max_s: 10
+  - kind: breaker_closes
+    description: The primary's breaker closes after it recovers
+    model: mock-a/mock
+    max_s: 45

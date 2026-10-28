@@ -3,3 +3,5 @@ models:
   mock/mock-a: { input: 1.0, cached_input: 0.1, output: 2.0 }
   mock/mock-b: { input: 1.0, output: 2.0 }
   anthropic/claude-test: { input: 1.0, output: 2.0 }
+  mock-a/mock: { input: 0, output: 0 }
+  mock-b/mock: { input: 0, output: 0 }
