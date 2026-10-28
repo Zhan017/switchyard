@@ -61,6 +61,36 @@ class RouteGroup(_Strict):
     stall_timeout_s: float = Field(default=5.0, gt=0)
 
 
+class Resilience(_Strict):
+    """Health, breaker, retry and failover policy (spec 7.3 to 7.5). The defaults are the
+    spec's numbers; the outage scenarios are judged against them."""
+
+    bucket_s: float = Field(default=10.0, gt=0)
+    window_buckets: int = Field(default=6, gt=0)  # 6 x 10 s = the 60 s trip window
+    # Trip rule 1: at least this many requests in the window, and this share failed.
+    trip_min_requests: int = Field(default=10, gt=0)
+    trip_failure_rate: float = Field(default=0.4, gt=0, le=1)
+    # Trip rule 2: this many retryable failures in a row.
+    trip_consecutive_failures: int = Field(default=5, gt=0)
+    # Trip rule 3: p95 time to first token over budget in two consecutive periods of this
+    # many buckets (3 x 10 s = 30 s), each with at least ttft_min_samples samples.
+    ttft_period_buckets: int = Field(default=3, gt=0)
+    ttft_min_samples: int = Field(default=10, gt=0)
+    probe_interval_s: float = Field(default=10.0, gt=0)
+    probe_timeout_s: float = Field(default=5.0, gt=0)
+    probe_successes: int = Field(default=3, gt=0)
+    max_attempts: int = Field(default=3, gt=0)  # every upstream call counts, retries too
+    retry_budget_ratio: float = Field(default=0.2, ge=0)
+    # Retries always allowed per model per window, so a lone failure at low traffic can
+    # still be retried. Finagle's retry budget has the same floor.
+    retry_budget_floor: int = Field(default=3, ge=0)
+    retry_base_s: float = Field(default=0.2, ge=0)
+    retry_cap_s: float = Field(default=2.0, ge=0)
+    cooldown_default_s: float = Field(default=10.0, gt=0)  # a 429 without Retry-After
+    auth_cooldown_s: float = Field(default=60.0, gt=0)  # a 401 or 403 from the provider
+    shared_sync_s: float = Field(default=0.5, gt=0)  # how often replicas sync through Redis
+
+
 class Tenant(_Strict):
     name: str
     key_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -74,6 +104,7 @@ class Settings(_Strict):
     tenants: list[Tenant]
     admin_key_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     prices_file: str = "prices.yaml"  # relative to the config file
+    resilience: Resilience = Field(default_factory=Resilience)
 
     @model_validator(mode="after")
     def _check_references(self) -> Settings:

@@ -10,9 +10,12 @@ import aiohttp
 
 from switchyard.accounting.pricing import PriceTable, load_prices
 from switchyard.config import ProviderConfig, Settings, load_settings
+from switchyard.observability.metrics import Metrics
 from switchyard.providers.anthropic import AnthropicAdapter
 from switchyard.providers.base import Adapter
 from switchyard.providers.openai import DeepSeekAdapter, OpenAIAdapter
+from switchyard.resilience.breaker import Breakers
+from switchyard.storage.records import Records
 
 ADAPTERS: dict[str, type[Adapter]] = {
     "openai": OpenAIAdapter,
@@ -26,6 +29,15 @@ class GatewayState:
     settings: Settings
     prices: PriceTable
     adapters: dict[str, Adapter]
+
+
+@dataclass
+class Services:
+    """What outlives a config reload: breakers and health, metrics, and the records writer."""
+
+    breakers: Breakers
+    metrics: Metrics
+    records: Records
 
 
 def build_adapter(provider_id: str, config: ProviderConfig, http: aiohttp.ClientSession) -> Adapter:

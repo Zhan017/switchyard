@@ -17,11 +17,17 @@ from switchyard import __version__
 from switchyard.api.chat import RequestContext, handle_chat, new_request_id
 from switchyard.api.errors import error_response
 from switchyard.api.schemas import InvalidRequest
-from switchyard.api.state import GatewayState, load_state
+from switchyard.api.state import GatewayState, Services, load_state
 from switchyard.config import DEFAULT_CONFIG, Tenant, uses_dev_keys
 from switchyard.core.router import RouteError
 from switchyard.observability.logging import configure_logging
 from switchyard.observability.metrics import Metrics
+from switchyard.resilience.breaker import Breakers, Transition
+from switchyard.resilience.prober import Prober
+from switchyard.resilience.shared import SharedState
+from switchyard.storage.records import NoRecords, PostgresRecords, Records
+
+log = logging.getLogger("switchyard")
 
 # Read timeouts are enforced per request by the stream watcher, not by the HTTP client.
 UPSTREAM_TIMEOUT = aiohttp.ClientTimeout(total=None, connect=5.0, sock_connect=5.0)
@@ -45,15 +51,39 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         client = http or upstream_session()
         app.state.http = client
-        app.state.gateway = load_state(path, client)
-        if uses_dev_keys(app.state.gateway.settings):
-            logging.getLogger("switchyard").warning(
+        state: GatewayState = load_state(path, client)
+        app.state.gateway = state
+        if uses_dev_keys(state.settings):
+            log.warning(
                 "The config uses the development keys from the repository. Replace them "
                 "before exposing this gateway: anyone with them can spend your provider keys."
             )
+        metrics: Metrics = app.state.metrics
+        breakers = Breakers(state.settings.resilience)
+        breakers.retain(state.settings.models)
+        records: Records = NoRecords()
+        if database_url := os.environ.get("SWITCHYARD_DATABASE_URL"):
+            records = PostgresRecords(database_url, metrics)
+        _watch_breakers(breakers, metrics, records)
+        shared = None
+        if redis_url := os.environ.get("SWITCHYARD_REDIS_URL"):
+            shared = SharedState.from_url(redis_url, breakers, metrics)
+        else:
+            metrics.shared_state_up.set(0)
+        prober = Prober(breakers, lambda: app.state.gateway, metrics, shared)
+        app.state.services = Services(breakers, metrics, records)
+        app.state.shared = shared
+        await records.start()
+        if shared is not None:
+            await shared.start()
+        await prober.start()
         try:
             yield
         finally:
+            await prober.stop()
+            if shared is not None:
+                await shared.stop()
+            await records.stop()
             if http is None:
                 await client.close()
 
@@ -65,6 +95,10 @@ def create_app(
     def gateway(request: Request) -> GatewayState:
         state: GatewayState = request.app.state.gateway
         return state
+
+    def services(request: Request) -> Services:
+        found: Services = request.app.state.services
+        return found
 
     def bearer(request: Request) -> str:
         header = request.headers.get("authorization", "")
@@ -97,7 +131,6 @@ def create_app(
             tenant=tenant,
             feature=feature,
         )
-        metrics: Metrics = request.app.state.metrics
         try:
             raw: Any = await request.json()
         except ValueError:
@@ -108,7 +141,7 @@ def create_app(
                 error_type="invalid_request_error",
             )
         try:
-            response = await handle_chat(raw, ctx, state, metrics)
+            response = await handle_chat(raw, ctx, state, services(request))
         except InvalidRequest as error:
             response = error_response(
                 400,
@@ -161,17 +194,45 @@ def create_app(
         if not is_admin(request):
             return error_response(401, "Admin key required", "invalid_admin_key")
         settings = gateway(request).settings
+        breakers = services(request).breakers
         return JSONResponse(
             {
                 pid: {
                     "type": cfg.type,
                     "base_url": cfg.base_url,
                     "key_configured": bool(cfg.api_key()) or cfg.api_key_env is None,
-                    "models": [m for m in settings.models if m.startswith(f"{pid}/")],
+                    "models": {
+                        key: breakers.snapshot(key)
+                        for key in settings.models
+                        if settings.provider_of(key)[0] == pid
+                    },
                 }
                 for pid, cfg in settings.providers.items()
             }
         )
+
+    @app.post("/admin/providers/{key:path}/breaker", response_model=None)
+    async def force_breaker(key: str, request: Request) -> Response:
+        """Force a breaker open or closed, or hand it back to the trip rules ("auto")."""
+        if not is_admin(request):
+            return error_response(401, "Admin key required", "invalid_admin_key")
+        if key not in gateway(request).settings.models:
+            return error_response(404, f"Unknown model '{key}'", "model_not_found")
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        force = body.get("force") if isinstance(body, dict) else None
+        if force not in ("open", "closed", "auto"):
+            return error_response(
+                400, 'Send {"force": "open" | "closed" | "auto"}', "invalid_request"
+            )
+        breakers = services(request).breakers
+        breakers.force(key, force)
+        shared: SharedState | None = request.app.state.shared
+        if shared is not None:
+            shared.wake.set()
+        return JSONResponse({key: breakers.snapshot(key)})
 
     @app.post("/admin/config/reload", response_model=None)
     async def reload_config(request: Request) -> Response:
@@ -182,9 +243,34 @@ def create_app(
         except Exception as error:  # a bad file is refused and the old config stays
             return error_response(400, f"Config not reloaded: {error}", "invalid_config")
         request.app.state.gateway = new_state
+        breakers = services(request).breakers
+        breakers.policy = new_state.settings.resilience
+        breakers.retain(new_state.settings.models)
         return JSONResponse({"status": "reloaded"})
 
     return app
+
+
+def _watch_breakers(breakers: Breakers, metrics: Metrics, records: Records) -> None:
+    for key in breakers.models:
+        metrics.breaker_state.labels(key).set(0)
+
+    def on_transition(transition: Transition) -> None:
+        metrics.breaker_state.labels(transition.key).set(1 if transition.to_state == "open" else 0)
+        if transition.origin == "local":
+            metrics.breaker_transitions.labels(transition.key, transition.to_state).inc()
+            records.add_breaker_event(transition)
+
+    def on_cooldown(key: str, reason: str) -> None:
+        metrics.cooldowns.labels(key, reason).inc()
+        if reason == "auth":
+            log.error("the provider rejected Switchyard's key for %s; check its API key", key)
+
+    breakers.listeners.append(on_transition)
+    breakers.on_cooldown.append(on_cooldown)
+    breakers.on_budget_exhausted.append(
+        lambda key: metrics.retry_budget_exhausted.labels(key).inc()
+    )
 
 
 def app_from_env() -> FastAPI:

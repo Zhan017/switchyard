@@ -43,7 +43,14 @@ def content_of(stream: list[Any]) -> str:
 
 
 def fault(chaos: httpx.Client, mode: str, **params: Any) -> None:
+    """A fault on the primary model only; the gateway can fail over to mock-b."""
     response = chaos.post("/chaos", json={"mode": mode, "params": params, "model": "mock-a"})
+    assert response.status_code == 200
+
+
+def outage(chaos: httpx.Client, mode: str, **params: Any) -> None:
+    """A fault on every model, so there is nothing to fail over to."""
+    response = chaos.post("/chaos", json={"mode": mode, "params": params})
     assert response.status_code == 200
 
 
@@ -162,20 +169,57 @@ async def test_unknown_model_and_bad_body(gateway: Gateway) -> None:
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_provider_500_before_first_byte(
+async def test_every_provider_failing_is_a_503(
     gateway: Gateway, chaos: httpx.Client, stream: bool
 ) -> None:
     client, _ = gateway
-    fault(chaos, "status", status=500)
+    outage(chaos, "status", status=500)
     response = await client.post("/v1/chat/completions", json=chat(stream=stream))
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "no_healthy_provider"
     assert response.headers["retry-after"] == "1"
 
 
-async def test_provider_429_retry_after_is_passed_on(gateway: Gateway, chaos: httpx.Client) -> None:
+@pytest.mark.parametrize("stream", [False, True])
+async def test_failover_before_the_first_token_is_invisible(
+    gateway: Gateway, chaos: httpx.Client, stream: bool
+) -> None:
+    client, _ = gateway
+    fault(chaos, "status", status=500)
+    response = await client.post("/v1/chat/completions", json=chat(stream=stream))
+    assert response.status_code == 200
+    if stream:
+        stream_events = events(response)
+        assert len(content_of(stream_events).split()) == 48
+        summary = stream_events[-2]["switchyard"]
+    else:
+        summary = response.json()["switchyard"]
+    # The primary, one retry on the primary, then the fallback.
+    assert summary["served_model"] == "mock/mock-b"
+    assert summary["attempts"] == 3
+    assert summary["failovers"] == 1
+    text = (await client.get("/metrics")).text
+    assert metric(text, "switchyard_attempts_total", role="retry", outcome="server_error") == 1
+    assert metric(text, "switchyard_failovers_total", phase="before_first_token") == 1
+
+
+async def test_a_429_cools_the_model_down_without_a_retry(
+    gateway: Gateway, chaos: httpx.Client
+) -> None:
     client, _ = gateway
     fault(chaos, "status", status=429, retry_after=30)
+    first = await client.post("/v1/chat/completions", json=chat())
+    assert first.json()["switchyard"]["attempts"] == 2  # no retry on a 429, straight to mock-b
+    second = await client.post("/v1/chat/completions", json=chat())
+    assert second.json()["switchyard"]["attempts"] == 1  # mock-a is skipped while cooling down
+    text = (await client.get("/metrics")).text
+    assert metric(text, "switchyard_cooldowns_total", reason="rate_limited") == 1
+    assert metric(text, "switchyard_candidates_skipped_total", reason="cooldown") == 1
+
+
+async def test_provider_429_retry_after_is_passed_on(gateway: Gateway, chaos: httpx.Client) -> None:
+    client, _ = gateway
+    outage(chaos, "status", status=429, retry_after=30)
     response = await client.post("/v1/chat/completions", json=chat(stream=True))
     assert response.status_code == 503
     assert response.headers["retry-after"] == "30"
@@ -216,7 +260,7 @@ async def test_mid_stream_failures_end_with_an_error_event(
 
 async def test_slow_first_token_is_a_timeout(gateway: Gateway, chaos: httpx.Client) -> None:
     client, _ = gateway
-    fault(chaos, "ttft_ms", ms=1500)  # the test route allows 1 s
+    outage(chaos, "ttft_ms", ms=1500)  # the test route allows 1 s
     response = await client.post("/v1/chat/completions", json=chat(stream=True))
     assert response.status_code == 503
     assert "first token" in response.json()["error"]["message"]
@@ -250,7 +294,9 @@ async def test_config_reload_needs_the_admin_key(gateway: Gateway) -> None:
     providers = await client.get(
         "/admin/providers", headers={"authorization": f"Bearer {ADMIN_KEY}"}
     )
-    assert providers.json()["mock"]["models"] == ["mock/mock-a", "mock/mock-b"]
+    models = providers.json()["mock"]["models"]
+    assert list(models) == ["mock/mock-a", "mock/mock-b"]
+    assert models["mock/mock-a"]["breaker"]["state"] == "closed"
 
 
 # The official OpenAI SDK as the client
@@ -300,7 +346,7 @@ async def test_openai_sdk_raises_on_a_mid_stream_error(
 
 
 async def test_openai_sdk_raises_status_errors(gateway: Gateway, chaos: httpx.Client) -> None:
-    fault(chaos, "status", status=500)
+    outage(chaos, "status", status=500)
     client = sdk(gateway)
     with pytest.raises(openai.APIStatusError) as caught:
         await client.chat.completions.create(
@@ -322,7 +368,7 @@ def metric(text: str, name: str, **labels: str) -> float:
 
 async def test_invalid_json_stream_is_an_http_error(gateway: Gateway, chaos: httpx.Client) -> None:
     client, _ = gateway
-    fault(chaos, "invalid_json")
+    outage(chaos, "invalid_json")
     body = chat(stream=True, response_format={"type": "json_object"})
     response = await client.post("/v1/chat/completions", json=body)
     assert response.status_code == 503
@@ -331,7 +377,7 @@ async def test_invalid_json_stream_is_an_http_error(gateway: Gateway, chaos: htt
 
 async def test_invalid_json_keeps_the_real_usage(gateway: Gateway, chaos: httpx.Client) -> None:
     client, _ = gateway
-    fault(chaos, "invalid_json")
+    outage(chaos, "invalid_json")
     response = await client.post(
         "/v1/chat/completions", json=chat(response_format={"type": "json_object"})
     )
@@ -346,7 +392,7 @@ async def test_failures_before_the_first_token_cost_nothing(
     gateway: Gateway, chaos: httpx.Client
 ) -> None:
     client, _ = gateway
-    fault(chaos, "status", status=500)
+    outage(chaos, "status", status=500)
     await client.post("/v1/chat/completions", json=chat(stream=True))
     await client.post("/v1/chat/completions", json=chat())
     text = (await client.get("/metrics")).text

@@ -15,7 +15,7 @@ Rules from the spec (7.6) that apply from the first version on:
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -153,11 +153,11 @@ class Relay:
             await aclose()
 
     async def run(
-        self, events: AsyncIterator[StreamEvent], first: StreamEvent | None = None
+        self, events: AsyncIterator[StreamEvent], head: Sequence[StreamEvent] = ()
     ) -> AsyncIterator[bytes]:
-        """Relay ``first`` (an event already read from ``events``), then the rest."""
+        """Relay ``head`` (events already read from the stream), then the rest of ``events``."""
         result = self.result
-        pending = [first] if first is not None else []
+        pending = list(reversed(head))
         iterator = aiter(events)
         buffer_text = self.request.wants_json
         text: list[str] = []

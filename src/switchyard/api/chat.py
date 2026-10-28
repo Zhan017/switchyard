@@ -1,45 +1,44 @@
 """POST /v1/chat/completions.
 
-Week 2 serves each request from the first capable model in its route. Retries, breakers
-and failover arrive in week 3, mid-stream failover in week 4; the accounting, metrics and
-error shapes here already follow the spec, so those weeks only add attempts.
+The attempt runner (core/attempts.py) tries the route's candidates in order, with
+same-provider retries and failover before the client has seen anything. This module
+turns its result into an OpenAI-format response and does the accounting: one Prometheus
+update, one log line and one Postgres record per request, with a row per attempt.
+Mid-stream failover arrives in week 4.
 """
 
 from __future__ import annotations
 
-import asyncio
+import hashlib
 import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+import orjson
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.types import Receive, Scope, Send
 
 from switchyard.accounting.usage import complete_usage
 from switchyard.api.errors import error_response
 from switchyard.api.schemas import parse_body, to_chat_request
-from switchyard.api.state import GatewayState
+from switchyard.api.state import GatewayState, Services
 from switchyard.config import Tenant
-from switchyard.core.router import Candidate, Route, capable_candidates, resolve
-from switchyard.core.types import (
-    ChatRequest,
-    Completion,
-    Finish,
-    RefusalDelta,
-    StreamEvent,
-    TextDelta,
-    Usage,
-    UsageReport,
+from switchyard.core.attempts import (
+    Attempt,
+    Exhausted,
+    NoCandidate,
+    Opened,
+    Runner,
+    assemble,
+    health_outcome,
 )
-from switchyard.core.watch import StreamTiming, watch
+from switchyard.core.router import Route, capable_candidates, resolve
+from switchyard.core.types import ChatRequest, StreamEvent, Usage
 from switchyard.observability.logging import log_request
-from switchyard.observability.metrics import Metrics
-from switchyard.providers.errors import ErrorKind, ProviderError
-from switchyard.streaming.relay import Relay, StreamResult, check_json, error_code, usage_json
-
-NO_USAGE = Usage()  # an attempt that failed before the first token; providers don't bill these
+from switchyard.storage.records import utc
+from switchyard.streaming.relay import Relay, StreamResult, error_code, usage_json
 
 
 @dataclass
@@ -48,20 +47,7 @@ class RequestContext:
     tenant: Tenant
     feature: str
     received: float = field(default_factory=time.monotonic)
-
-
-@dataclass
-class Outcome:
-    """One finished attempt, ready for accounting."""
-
-    candidate: Candidate
-    usage: Usage
-    status: str  # "ok", an error code, or "client_closed"
-    attempt_outcome: str  # "ok", an error kind, or "client_closed"
-    delivered: bool  # did any of the answer reach the client
-    upstream_ttft_s: float | None
-    overhead_s: float | None
-    overhead_mode: str
+    received_wall: float = field(default_factory=time.time)
 
 
 class RelayResponse(StreamingResponse):
@@ -72,10 +58,10 @@ class RelayResponse(StreamingResponse):
         self,
         relay: Relay,
         events: AsyncIterator[StreamEvent],
-        first: StreamEvent | None,
+        head: list[StreamEvent],
         headers: dict[str, str],
     ) -> None:
-        super().__init__(relay.run(events, first), media_type="text/event-stream", headers=headers)
+        super().__init__(relay.run(events, head), media_type="text/event-stream", headers=headers)
         self._relay = relay
         self._events = events
 
@@ -86,63 +72,86 @@ class RelayResponse(StreamingResponse):
             await self._relay.close(self._events)
 
 
+@dataclass
+class Call:
+    """Everything one request's accounting needs."""
+
+    ctx: RequestContext
+    state: GatewayState
+    services: Services
+    route: Route
+    request: ChatRequest
+    prompt_hash: str | None
+    runner: Runner
+
+
 async def handle_chat(
-    raw: Any, ctx: RequestContext, state: GatewayState, metrics: Metrics
+    raw: Any, ctx: RequestContext, state: GatewayState, services: Services
 ) -> JSONResponse | StreamingResponse:
     body = parse_body(raw)
     route = resolve(state.settings, body.model)
     request = to_chat_request(body, route.limits.default_max_tokens)
-    candidate = capable_candidates(route, request)[0]
-    if body.stream:
-        return await _stream(ctx, state, metrics, route, candidate, request)
+    candidates = capable_candidates(route, request)
+    runner = Runner(
+        breakers=services.breakers,
+        adapters=state.adapters,
+        limits=route.limits,
+        request=request,
+        candidates=candidates,
+        deadline=ctx.received + route.limits.request_deadline_s,
+        # A JSON answer is sent only once complete and valid, so it is read to the end
+        # before committing, even when the client asked for a stream.
+        mode="stream" if body.stream and not request.wants_json else "buffered",
+    )
+    call = Call(ctx, state, services, route, request, _prompt_hash(raw, services), runner)
+    metrics = services.metrics
     metrics.in_flight.inc()
     try:
-        return await _complete(ctx, state, metrics, route, candidate, request)
-    finally:
+        opened = await runner.open()
+    except NoCandidate as error:
         metrics.in_flight.dec()
-
-
-async def _complete(
-    ctx: RequestContext,
-    state: GatewayState,
-    metrics: Metrics,
-    route: Route,
-    candidate: Candidate,
-    request: ChatRequest,
-) -> JSONResponse:
-    adapter = state.adapters[candidate.provider]
-    remaining = ctx.received + route.limits.request_deadline_s - time.monotonic()
-    started = time.monotonic()
-    usage = NO_USAGE
-    try:
-        try:
-            async with asyncio.timeout(remaining):
-                completion = await adapter.complete(candidate.model, candidate.options, request)
-        except TimeoutError:
-            raise ProviderError(ErrorKind.DEADLINE, "request deadline exceeded") from None
-        # The provider answered, so its usage counts even if the JSON turns out invalid.
-        usage = complete_usage(completion.usage, request, _output_text(completion))
-        if request.wants_json:
-            check_json(completion.text, completion.finish_reason, bool(completion.refusal))
-    except ProviderError as error:
-        code, status = error_code(error)
-        _account(
-            ctx,
-            state,
-            metrics,
-            route,
-            Outcome(candidate, usage, code, error.kind.value, False, None, None, "unary"),
-            error=error,
+        message = "No healthy provider: " + ", ".join(f"{k} is {r}" for k, r in error.skipped)
+        _account(call, [], served=None, status="no_healthy_provider", error_message=message)
+        return error_response(503, message, "no_healthy_provider", retry_after=error.retry_after)
+    except Exhausted as error:
+        metrics.in_flight.dec()
+        code, status = error_code(error.error)
+        _account(call, error.attempts, served=None, status=code, error_message=error.error.message)
+        return error_response(
+            status,
+            error.error.message,
+            code,
+            retry_after=error.retry_after if status == 503 else None,
         )
-        return error_response(status, error.message, code, retry_after=_retry_after(error, status))
-    upstream_s = time.monotonic() - started
-    overhead = (time.monotonic() - ctx.received) - upstream_s
+    except BaseException:
+        # The client went away while attempts were running.
+        metrics.in_flight.dec()
+        _account(call, runner.attempts, served=None, status="client_closed", error_message=None)
+        raise
+    if not body.stream:
+        metrics.in_flight.dec()
+        return _complete(call, opened)
+    return _stream(call, opened)
+
+
+def _complete(call: Call, opened: Opened) -> JSONResponse:
+    attempt = opened.attempt
+    attempt.delivered = True
+    assert opened.collected is not None
+    completion = assemble(opened.collected)
+    overhead = None
+    if attempt.n == 1 and attempt.ended is not None:
+        # Gateway time on both sides of the provider's answer.
+        overhead = (time.monotonic() - call.ctx.received) - (attempt.ended - attempt.started)
+    text = completion.text + "".join(c.name + c.arguments for c in completion.tool_calls)
     summary = _account(
-        ctx,
-        state,
-        metrics,
-        route,
-        Outcome(candidate, usage, "ok", "ok", True, None, overhead, "unary"),
+        call,
+        opened.attempts,
+        served=attempt,
+        status="ok",
+        error_message=None,
+        overhead=(overhead, "unary"),
+        response_chars=len(text),
     )
     message: dict[str, Any] = {
         "role": "assistant",
@@ -152,18 +161,18 @@ async def _complete(
     if completion.tool_calls:
         message["tool_calls"] = [
             {
-                "id": call.id,
+                "id": tool.id,
                 "type": "function",
-                "function": {"name": call.name, "arguments": call.arguments or "{}"},
+                "function": {"name": tool.name, "arguments": tool.arguments},
             }
-            for call in completion.tool_calls
+            for tool in completion.tool_calls
         ]
     return JSONResponse(
         {
-            "id": _response_id(ctx),
+            "id": _response_id(call.ctx),
             "object": "chat.completion",
             "created": int(time.time()),
-            "model": route.alias,
+            "model": call.route.alias,
             "choices": [
                 {
                     "index": 0,
@@ -172,79 +181,21 @@ async def _complete(
                     "logprobs": None,
                 }
             ],
-            "usage": usage_json(usage),
+            "usage": usage_json(_total_usage(opened.attempts)),
             "switchyard": summary,
         },
-        headers={"x-request-id": ctx.request_id},
+        headers={"x-request-id": call.ctx.request_id},
     )
 
 
-async def _stream(
-    ctx: RequestContext,
-    state: GatewayState,
-    metrics: Metrics,
-    route: Route,
-    candidate: Candidate,
-    request: ChatRequest,
-) -> JSONResponse | StreamingResponse:
-    adapter = state.adapters[candidate.provider]
-    limits = route.limits
-    timing = StreamTiming()
-    events = watch(
-        adapter.stream(candidate.model, candidate.options, request),
-        ttft_s=limits.ttft_timeout_s,
-        stall_s=limits.stall_timeout_s,
-        deadline=ctx.received + limits.request_deadline_s,
-        timing=timing,
-    )
-    metrics.in_flight.inc()
-
-    def fail(error: ProviderError, usage: Usage) -> JSONResponse:
-        metrics.in_flight.dec()
-        code, status = error_code(error)
-        _account(
-            ctx,
-            state,
-            metrics,
-            route,
-            Outcome(candidate, usage, code, error.kind.value, False, timing.ttft_s, None, "stream"),
-            error=error,
-        )
-        return error_response(status, error.message, code, retry_after=_retry_after(error, status))
-
-    # Wait for the first event before answering, so a provider that fails before
-    # sending anything gets a proper HTTP error instead of a 200 with an error inside.
-    try:
-        first: StreamEvent | None = await anext(events)
-    except StopAsyncIteration:
-        first = None
-    except ProviderError as error:
-        return fail(error, NO_USAGE)
-
-    source: AsyncIterator[StreamEvent] = events
-    if request.wants_json:
-        # A JSON answer is sent only once complete and valid, so read all of it now: then
-        # any failure, including invalid JSON, is still a proper HTTP error.
-        collected = [first] if first is not None else []
-        try:
-            async for event in events:
-                collected.append(event)
-            text = "".join(e.text for e in collected if isinstance(e, TextDelta))
-            finish = next((e.reason for e in reversed(collected) if isinstance(e, Finish)), None)
-            refused = any(isinstance(e, RefusalDelta) for e in collected)
-            check_json(text, finish, refused)
-        except ProviderError as error:
-            reported = next(
-                (e.usage for e in reversed(collected) if isinstance(e, UsageReport)), None
-            )
-            text = "".join(e.text for e in collected if isinstance(e, TextDelta))
-            return fail(error, complete_usage(reported, request, text))
-        first, source = None, _replay(collected)
+def _stream(call: Call, opened: Opened) -> RelayResponse:
+    attempt = opened.attempt
 
     def finalize(result: StreamResult) -> dict[str, Any]:
-        metrics.in_flight.dec()
+        call.services.metrics.in_flight.dec()
         output = result.text + "".join(c.name + c.arguments for c in result.tool_calls)
-        result.usage = complete_usage(result.usage, request, output)
+        attempt.usage = complete_usage(result.usage, call.request, output)
+        attempt.delivered = result.first_byte_at is not None
         if result.error is not None:
             status, outcome = error_code(result.error)[0], result.error.kind.value
         elif result.aborted:
@@ -252,85 +203,137 @@ async def _stream(
         elif result.recovered_from is not None:
             status, outcome = "ok", result.recovered_from.kind.value
         else:
-            status = outcome = "ok"
+            status = "ok"
+            outcome = health_outcome(result.finish_reason, bool(result.refusal))
+        if opened.collected is None:  # a buffered attempt was recorded when it committed
+            call.runner.finish(attempt, outcome)
+        elif outcome == "client_closed":
+            attempt.outcome = outcome
         overhead = None
-        # Only meaningful when the first chunk follows the first upstream token, which is
-        # not the case for a buffered JSON answer.
-        if not request.wants_json and result.started_at is not None and timing.ttft_s is not None:
-            overhead = (result.started_at - ctx.received) - timing.ttft_s
+        # Only meaningful when nothing was retried and the first chunk follows the first
+        # upstream token, which is not the case for a buffered JSON answer.
+        ttft = opened.timing.ttft_s
+        if attempt.n == 1 and opened.collected is None and result.started_at and ttft:
+            overhead = (result.started_at - call.ctx.received) - ttft
+        result.usage = _total_usage(opened.attempts)
+        error = result.error or result.recovered_from
         return _account(
-            ctx,
-            state,
-            metrics,
-            route,
-            Outcome(
-                candidate,
-                result.usage,
-                status,
-                outcome,
-                result.first_byte_at is not None,
-                timing.ttft_s,
-                overhead,
-                "stream",
-            ),
-            error=result.error or result.recovered_from,
+            call,
+            opened.attempts,
+            served=attempt,
+            status=status,
+            error_message=error.message if error else None,
+            overhead=(overhead, "stream"),
+            response_chars=len(output),
         )
 
     relay = Relay(
-        response_id=_response_id(ctx), alias=route.alias, request=request, finalize=finalize
+        response_id=_response_id(call.ctx),
+        alias=call.route.alias,
+        request=call.request,
+        finalize=finalize,
     )
     headers = {
-        "x-request-id": ctx.request_id,
+        "x-request-id": call.ctx.request_id,
         "cache-control": "no-cache",
         "x-accel-buffering": "no",
     }
-    return RelayResponse(relay, source, first, headers)
+    return RelayResponse(relay, opened.events, opened.head, headers)
 
 
-async def _replay(events: list[StreamEvent]) -> AsyncIterator[StreamEvent]:
-    for event in events:
-        yield event
+def _total_usage(attempts: list[Attempt]) -> Usage:
+    total = Usage()
+    for attempt in attempts:
+        total = total + attempt.usage
+    return total
 
 
 def _account(
-    ctx: RequestContext,
-    state: GatewayState,
-    metrics: Metrics,
-    route: Route,
-    outcome: Outcome,
-    error: ProviderError | None = None,
+    call: Call,
+    attempts: list[Attempt],
+    *,
+    served: Attempt | None,
+    status: str,
+    error_message: str | None,
+    overhead: tuple[float | None, str] = (None, ""),
+    response_chars: int | None = None,
 ) -> dict[str, Any]:
-    """Metrics, cost and the log line for one finished request. Returns the summary sent to
-    the client in the ``switchyard`` object."""
-    candidate, usage = outcome.candidate, outcome.usage
+    """Metrics, cost, the log line and the Postgres record for one finished request.
+    Returns the summary sent to the client in the ``switchyard`` object."""
+    ctx, services, route = call.ctx, call.services, call.route
+    metrics = services.metrics
     tenant, feature = ctx.tenant.name, ctx.feature
-    cost = state.prices.cost(candidate.key, usage) or 0.0
-    estimated = "true" if usage.estimated else "false"
-    cost_class = "served" if outcome.delivered else "wasted"
     total_s = time.monotonic() - ctx.received
+    total_cost = 0.0
+    attempt_rows = []
+    previous: Attempt | None = None
+    for attempt in attempts:
+        provider, model = attempt.candidate.provider, attempt.candidate.model
+        usage = attempt.usage
+        cost = call.state.prices.cost(attempt.key, usage) or 0.0
+        total_cost += cost
+        estimated = "true" if usage.estimated else "false"
+        cost_class = "served" if attempt.delivered else "wasted"
+        outcome = attempt.outcome if attempt.outcome != "pending" else "client_closed"
+        metrics.attempts.labels(provider, model, attempt.role, outcome).inc()
+        if attempt.ttft_s is not None:
+            metrics.ttft.labels(provider).observe(attempt.ttft_s)
+        labels = (tenant, feature, provider, model)
+        metrics.tokens.labels(*labels, "input", estimated).inc(usage.input_tokens)
+        metrics.tokens.labels(*labels, "output", estimated).inc(usage.output_tokens)
+        metrics.cost.labels(*labels, cost_class, estimated).inc(cost)
+        if attempt.role == "failover" and previous is not None:
+            metrics.failovers.labels(previous.key, attempt.key, "before_first_token", "none").inc()
+        previous = attempt
+        if not services.records.enabled:
+            continue
+        attempt_rows.append(
+            {
+                "request_id": ctx.request_id,
+                "n": attempt.n,
+                "role": attempt.role,
+                "provider": provider,
+                "model": model,
+                "started_at": utc(attempt.started_wall),
+                "ttft_ms": _ms(attempt.ttft_s),
+                "ended_at": (
+                    utc(attempt.started_wall + (attempt.ended - attempt.started))
+                    if attempt.ended is not None
+                    else None
+                ),
+                "outcome": outcome,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "wasted_tokens": 0
+                if attempt.delivered
+                else usage.input_tokens + usage.output_tokens,
+                "cost_usd": cost,
+                "usage_estimated": usage.estimated,
+                "emitted_chars_before": 0,
+            }
+        )
+    for key, reason in call.runner.skipped:
+        metrics.skipped.labels(key, reason).inc()
 
-    metrics.requests.labels(tenant, feature, route.alias, outcome.status).inc()
-    metrics.attempts.labels(
-        candidate.provider, candidate.model, "primary", outcome.attempt_outcome
-    ).inc()
-    metrics.request_seconds.labels(candidate.provider).observe(total_s)
-    if outcome.upstream_ttft_s is not None:
-        metrics.ttft.labels(candidate.provider).observe(outcome.upstream_ttft_s)
-    if outcome.overhead_s is not None:
-        metrics.overhead.labels(outcome.overhead_mode).observe(max(0.0, outcome.overhead_s))
-    labels = (tenant, feature, candidate.provider, candidate.model)
-    metrics.tokens.labels(*labels, "input", estimated).inc(usage.input_tokens)
-    metrics.tokens.labels(*labels, "output", estimated).inc(usage.output_tokens)
-    metrics.cost.labels(*labels, cost_class, estimated).inc(cost)
+    last = served or (attempts[-1] if attempts else None)
+    provider_label = last.candidate.provider if last else "none"
+    metrics.requests.labels(tenant, feature, route.alias, status).inc()
+    metrics.request_seconds.labels(provider_label).observe(total_s)
+    overhead_s, overhead_mode = overhead
+    if overhead_s is not None:
+        metrics.overhead.labels(overhead_mode).observe(max(0.0, overhead_s))
 
+    usage = _total_usage(attempts)
+    failovers = sum(1 for a in attempts if a.role == "failover")
     summary = {
         "request_id": ctx.request_id,
-        "provider": candidate.provider,
-        "served_model": candidate.key,
-        "attempts": 1,
-        "failovers": 0,
+        "provider": last.candidate.provider if last else None,
+        "served_model": served.key if served else None,
+        "attempts": len(attempts),
+        "failovers": failovers,
         "midstream_failovers": 0,
-        "cost_usd": round(cost, 8),
+        "strategy": None,
+        "cost_usd": round(total_cost, 8),
         "usage_estimated": usage.estimated,
     }
     log_request(
@@ -339,30 +342,70 @@ def _account(
             "tenant": tenant,
             "feature": feature,
             "route": route.alias,
-            "status": outcome.status,
-            "error": error.message if error else None,
+            "status": status,
+            "error": error_message,
             "input_tokens": usage.input_tokens,
             "output_tokens": usage.output_tokens,
-            "ttft_ms": _ms(outcome.upstream_ttft_s),
+            "ttft_ms": _ms(served.ttft_s) if served else None,
             "total_ms": _ms(total_s),
-            "overhead_ms": _ms(outcome.overhead_s),
+            "overhead_ms": _ms(overhead_s),
+            "trail": [
+                {"model": a.key, "role": a.role, "outcome": a.outcome, "ms": _ms(_took(a))}
+                for a in attempts
+            ],
+            "skipped": [f"{k} ({r})" for k, r in call.runner.skipped] or None,
         }
     )
+    records = services.records
+    if records.enabled:
+        records.add_request(
+            {
+                "id": ctx.request_id,
+                "tenant": tenant,
+                "feature": feature,
+                "route_group": route.alias,
+                "status": status,
+                "started_at": utc(ctx.received_wall),
+                "finished_at": utc(ctx.received_wall + total_s),
+                "ttft_ms": _ms(served.ttft_s) if served else None,
+                "total_ms": _ms(total_s),
+                "served_provider": served.candidate.provider if served else None,
+                "served_model": served.candidate.model if served else None,
+                "strategy": None,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cost_usd": total_cost,
+                "usage_estimated": usage.estimated,
+                "failovers": failovers,
+                "midstream_failovers": 0,
+                "seam_latency_ms": None,
+                "seam_action": None,
+                "prompt_hash": call.prompt_hash,
+                "prompt_chars": sum(len(m.content or "") for m in call.request.messages),
+                "response_chars": response_chars,
+                "error_code": None if status in ("ok", "client_closed") else status,
+            },
+            attempt_rows,
+        )
     return summary
+
+
+def _prompt_hash(raw: Any, services: Services) -> str | None:
+    if not services.records.enabled or not isinstance(raw, dict):
+        return None
+    try:
+        data = orjson.dumps(raw.get("messages"), option=orjson.OPT_SORT_KEYS)
+    except TypeError:
+        return None
+    return hashlib.sha256(data).hexdigest()
+
+
+def _took(attempt: Attempt) -> float | None:
+    return None if attempt.ended is None else attempt.ended - attempt.started
 
 
 def _ms(seconds: float | None) -> float | None:
     return None if seconds is None else round(seconds * 1000, 2)
-
-
-def _retry_after(error: ProviderError, status: int) -> float | None:
-    if status != 503:
-        return None
-    return error.retry_after if error.retry_after is not None else 1.0
-
-
-def _output_text(completion: Completion) -> str:
-    return completion.text + "".join(c.name + c.arguments for c in completion.tool_calls)
 
 
 def _response_id(ctx: RequestContext) -> str:

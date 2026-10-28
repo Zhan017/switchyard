@@ -73,6 +73,56 @@ class Metrics:
             registry=r,
         )
         self.in_flight = Gauge("switchyard_requests_in_flight", "Requests being served", registry=r)
+        self.breaker_state = Gauge(
+            "switchyard_breaker_state",
+            "Breaker state per provider and model: 0 closed, 1 open",
+            ["provider_model"],
+            registry=r,
+        )
+        self.breaker_transitions = Counter(
+            "switchyard_breaker_transitions_total",
+            "Breaker transitions",
+            ["provider_model", "to"],
+            registry=r,
+        )
+        self.cooldowns = Counter(
+            "switchyard_cooldowns_total",
+            "Cooldowns started: rate_limited for a 429, auth for a rejected provider key",
+            ["provider_model", "reason"],
+            registry=r,
+        )
+        self.skipped = Counter(
+            "switchyard_candidates_skipped_total",
+            "Candidates skipped while routing, because the breaker is open or in cooldown",
+            ["provider_model", "reason"],
+            registry=r,
+        )
+        self.failovers = Counter(
+            "switchyard_failovers_total",
+            "Moves to another model; phase is before_first_token or midstream",
+            ["from", "to", "phase", "strategy"],
+            registry=r,
+        )
+        self.retry_budget_exhausted = Counter(
+            "switchyard_retry_budget_exhausted_total",
+            "Same-provider retries refused by the retry budget",
+            ["provider_model"],
+            registry=r,
+        )
+        self.records_dropped = Counter(
+            "switchyard_records_dropped_total",
+            "Request, attempt and breaker records not written to Postgres",
+            ["table"],
+            registry=r,
+        )
+        self.shared_state_up = Gauge(
+            "switchyard_shared_state_up",
+            "1 while the last sync with Redis succeeded, 0 while deciding from local state",
+            registry=r,
+        )
+        self.shared_state_errors = Counter(
+            "switchyard_shared_state_errors_total", "Failed syncs with Redis", registry=r
+        )
 
     def render(self) -> bytes:
         return generate_latest(self.registry)
