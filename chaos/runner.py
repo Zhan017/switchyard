@@ -68,6 +68,9 @@ class SeedRun:
     observer: bool = False  # did the admin API answer
     upstream_requests: dict[str, int] = field(default_factory=dict)  # probes excluded
     upstream_probes: dict[str, int] = field(default_factory=dict)
+    # Attempts counted by the gateway itself, probes excluded, when it is Switchyard. The
+    # mock servers can't count an attempt whose connection they refused.
+    gateway_attempts: int | None = None
     fault_errors: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
@@ -77,6 +80,7 @@ class SeedRun:
             "observer": self.observer,
             "upstream_requests": self.upstream_requests,
             "upstream_probes": self.upstream_probes,
+            "gateway_attempts": self.gateway_attempts,
             "fault_errors": self.fault_errors,
         }
 
@@ -108,6 +112,7 @@ async def run_seed(scenario: Scenario, target: Target, seed: int) -> SeedRun:
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         await _reset(session, scenario, target)
         before = await _upstream_stats(session, target)
+        gateway_before = await gateway_attempts(session, target)
         run = SeedRun(seed=seed, started=time.time())
         requests = plan(scenario, seed)
         start = time.monotonic() + 0.5
@@ -130,6 +135,9 @@ async def run_seed(scenario: Scenario, target: Target, seed: int) -> SeedRun:
         with contextlib.suppress(asyncio.CancelledError):
             await observer
         after = await _upstream_stats(session, target)
+        gateway_after = await gateway_attempts(session, target)
+        if gateway_before is not None and gateway_after is not None:
+            run.gateway_attempts = gateway_after - gateway_before
         for name in target.upstreams:
             requests_delta = after[name][0] - before[name][0]
             probes_delta = after[name][1] - before[name][1]
@@ -190,6 +198,24 @@ async def _upstream_stats(
             stats = await response.json()
         out[name] = (int(stats["requests"]), int(stats.get("probes", 0)))
     return out
+
+
+async def gateway_attempts(session: aiohttp.ClientSession, target: Target) -> int | None:
+    """Switchyard's own count of upstream attempts, probes excluded, from /metrics. None
+    for any other gateway."""
+    try:
+        async with session.get(f"{target.gateway}/metrics") as response:
+            if response.status != 200:
+                return None
+            text = await response.text()
+    except aiohttp.ClientError:
+        return None
+    total, seen = 0.0, False
+    for line in text.splitlines():
+        if line.startswith("switchyard_attempts_total{") and 'role="probe"' not in line:
+            total += float(line.rsplit(" ", 1)[1])
+            seen = True
+    return round(total) if seen else (0 if "switchyard_attempts_total" in text else None)
 
 
 async def _fault(

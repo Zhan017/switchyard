@@ -144,6 +144,10 @@ async def test_total_outage_fails_fast_without_piling_on(stack: Target, tmp_path
     fast = checks["fast_failure"]["interval"]
     assert fast["hits"] == fast["total"] > 40
     assert checks["attempt_ratio"]["verdict"] == "pass"
+    # Refused connections never reach the mocks, so the gateway's own count is used.
+    assert "counted by the gateway" in checks["attempt_ratio"]["measured"]
+    seed = summary["seeds"][0]
+    assert seed["gateway_attempts"] > sum(seed["upstream_requests"].values())
     assert checks["recovery"]["verdict"] == "pass"
 
 

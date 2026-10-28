@@ -65,19 +65,29 @@ def evaluate_check(scenario: Scenario, check: Check, runs: list[SeedRun]) -> dic
         )
         return out
     if check.kind == "attempt_ratio":
-        attempts = sum(sum(run.upstream_requests.values()) for run in runs)
+        # Prefer the gateway's own count: a connection the mock refused never reaches it.
+        by_gateway = all(run.gateway_attempts is not None for run in runs)
+
+        def count(run: SeedRun) -> int:
+            if by_gateway and run.gateway_attempts is not None:
+                return run.gateway_attempts
+            return sum(run.upstream_requests.values())
+
+        attempts = sum(count(run) for run in runs)
         requests = sum(len(run.results) for run in runs)
         ratio = attempts / requests if requests else math.inf
+        source = (
+            "counted by the gateway"
+            if by_gateway
+            else "counted at the mock servers, which can't see refused connections"
+        )
         assert check.max is not None
         out.update(
-            measured=f"{ratio:.3f}x ({attempts} upstream attempts for {requests} requests)",
+            measured=f"{ratio:.3f}x ({attempts} upstream attempts for {requests} requests, "
+            f"{source})",
             ratio=ratio,
             per_seed=[
-                {
-                    "seed": run.seed,
-                    "ratio": sum(run.upstream_requests.values()) / max(1, len(run.results)),
-                }
-                for run in runs
+                {"seed": run.seed, "ratio": count(run) / max(1, len(run.results))} for run in runs
             ],
             verdict="pass" if ratio <= check.max else "fail",
         )
@@ -202,9 +212,9 @@ def markdown(summary: dict[str, Any], environment: dict[str, Any]) -> str:
         "",
         "## Per seed",
         "",
-        "| Seed | Requests | Succeeded | Upstream attempts | Probes | Failed requests: p50, max "
-        "latency | Errors |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Seed | Requests | Succeeded | Attempts seen by the mocks | Attempts counted by the "
+        "gateway | Probes seen by the mocks | Failed requests: p50, max latency | Errors |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for seed in seeds:
         attempts = sum(seed["upstream_requests"].values())
@@ -213,9 +223,11 @@ def markdown(summary: dict[str, Any], environment: dict[str, Any]) -> str:
         if seed["failed_latency_p50_s"] is not None:
             latency = f"{seed['failed_latency_p50_s']:.2f} s, {seed['failed_latency_max_s']:.2f} s"
         errors = ", ".join(f"{k}: {v}" for k, v in sorted(seed["errors"].items())) or "none"
+        by_gateway = seed.get("gateway_attempts")
+        gateway = "n/a" if by_gateway is None else str(by_gateway)
         lines.append(
-            f"| {seed['seed']} | {seed['requests']} | {seed['succeeded']} | {attempts} | {probes} "
-            f"| {latency} | {errors} |"
+            f"| {seed['seed']} | {seed['requests']} | {seed['succeeded']} | {attempts} "
+            f"| {gateway} | {probes} | {latency} | {errors} |"
         )
     traffic = scenario.traffic
     lines += [
