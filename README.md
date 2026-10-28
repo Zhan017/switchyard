@@ -2,7 +2,7 @@
 
 An LLM gateway that keeps answers flowing when providers fail. When a provider dies halfway through a streamed answer, Switchyard finishes the answer on another provider, and measures how well each way of doing that works.
 
-**Status:** week 2 of 5. The proxy works: one OpenAI-compatible endpoint in front of OpenAI, Anthropic and DeepSeek, streaming or not, with cost per tenant and feature. Breakers and failover come in week 3, mid-stream failover in week 4. The full plan is in [SPEC.md](SPEC.md).
+**Status:** week 3 of 5. One OpenAI-compatible endpoint in front of OpenAI, Anthropic and DeepSeek, with circuit breakers, retries and failover before the first token, and cost per tenant and feature. Mid-stream failover comes in week 4. The full plan is in [SPEC.md](SPEC.md).
 
 ## The question
 
@@ -11,7 +11,7 @@ API7's AISIX gateway already continues broken streams, and LiteLLM did until it 
 ## Measured so far
 
 - **Can another model finish an interrupted answer?** Yes, well enough to build on. Read at the join point, DeepSeek's native continuation looked seamless on 25 of 30 joins, and instructed continuation with seam repair on 55 of 90. [Week 1 report](eval/seam/results/20261023-050151/report.md).
-- **What does the gateway cost?** At 200 streamed requests a second it adds 1.7 ms at p50 and 2.6 ms at p95 to time to first token, on a shared 2-vCPU machine. The first version collapsed between 150 and 200 a second; profiling traced it to the HTTP client, and switching from httpx to aiohttp cut its CPU per stream about twelvefold. [Results](docs/results/overhead-2026-10-28.md), [decision 4](docs/decisions/0004-aiohttp-for-upstream-calls.md).
+- **What does the gateway cost?** On a shared 2-vCPU machine at 100 streamed requests a second, 2.3 ms at p50 and 5.4 ms at p95 added to time to first token (week 2's code measured 2.0 and 3.6 on the same machine). Non-streaming requests cost more since week 3, 7.6 ms at p50, because their answers are now read from the provider as a stream so a hung provider is caught in 5 s; about half of that is the mock provider writing a stream. The first version collapsed between 150 and 200 a second; switching from httpx to aiohttp cut its CPU per stream about twelvefold. [Week 3 results](docs/results/overhead-2026-10-28-week3.md), [week 2 results](docs/results/overhead-2026-10-28.md), decisions [4](docs/decisions/0004-aiohttp-for-upstream-calls.md) and [5](docs/decisions/0005-read-every-answer-as-a-stream.md).
 
 ## Try it
 
@@ -19,7 +19,7 @@ API7's AISIX gateway already continues broken streams, and LiteLLM did until it 
 docker compose up --build
 ```
 
-That starts the gateway on :8000, mockllm (a fake provider you can break on command) on :8001, and Prometheus on :9090, all on localhost only. Put provider keys in `.env` (see `.env.example`) to use the real models; a route skips any provider without a key, and the `mock` route always works. The shipped config uses development keys, shown below; replace them before running it anywhere others can reach.
+That starts the gateway on :8000, two mockllm providers (fakes you can break on command) on :8001 and :8002 with their fault controls on :8101 and :8102, Redis, Postgres and Prometheus on :9090, all on localhost only. Put provider keys in `.env` (see `.env.example`) to use the real models; a route skips any provider without a key, and the `mock` route always works. The shipped config uses development keys, shown below; replace them before running it anywhere others can reach.
 
 ```sh
 curl localhost:8000/v1/chat/completions \
@@ -42,19 +42,31 @@ client = OpenAI(
 client.chat.completions.create(model="chat-fast", messages=[{"role": "user", "content": "hi"}])
 ```
 
-`chat-fast` is a route group: Claude Haiku 5.5, GPT-6 Luna and DeepSeek Flash, in that order. Each request goes to the first model that supports what it asks for. Break the mock provider and watch what happens:
+`chat-fast` is a route group: Claude Haiku 5.5, GPT-6 Luna and DeepSeek Flash, in that order. Each request goes to the first healthy model that supports what it asks for. Take the first mock provider down and watch requests fail over to the second, and its breaker open:
 
 ```sh
-curl localhost:8001/chaos -d '{"mode": "error_event", "params": {"tokens": 5}}'
+curl localhost:8101/chaos -d '{"mode": "refuse_connections", "duration_s": 60}'
+curl -s localhost:8000/admin/providers -H 'authorization: Bearer sy-admin-local-key'
+```
+
+Run an outage scenario against it (any OpenAI-compatible URL works with `--gateway`):
+
+```sh
+uv run switchyard-chaos run chaos/scenarios/s4.yaml
 ```
 
 ## What works now
 
 - `POST /v1/chat/completions` in OpenAI's format: streaming and not, tools, JSON mode and JSON schemas, translated to each provider's API.
 - Tenants with hashed keys and a feature header for cost attribution; cost per tenant, feature and model in Prometheus, using each provider's price table, including Claude's long-context tier and DeepSeek's off-peak discount.
-- Time limits on the first token, on stalls and on the whole request. Provider failures before the first token become proper HTTP errors; after it, a clean error event the OpenAI SDKs raise.
+- Time limits on the first token, on stalls and on the whole request, for streamed and non-streamed requests alike ([decision 5](docs/decisions/0005-read-every-answer-as-a-stream.md)).
+- Circuit breakers per provider and model: trip on 40% failures over 60 s, 5 failures in a row, or slow first tokens; recover through one-token probes every 10 s, at most 35 s after the provider is healthy. A 429 is a cooldown, not a failure.
+- Retries on the same provider only before the first token, at most once, within a 20% retry budget; failover down the route, at most 3 attempts. Refusals and content filters are never failed over.
+- Breakers and health shared between replicas through Redis with no Redis call on the request path, failing open to local state when Redis is down ([decision 6](docs/decisions/0006-no-redis-on-the-request-path.md)). Request and attempt records in Postgres, batched so they never block a request.
+- Provider failures before anything reached the client become a failover, or a proper HTTP error if nothing is left; after that, a clean error event the OpenAI SDKs raise.
 - Tool calls forwarded only once complete, and JSON answers only once valid, so a failover never has half of either to take back ([decision 3](docs/decisions/0003-forward-tool-calls-whole.md)).
-- mockllm with injectable faults: error rates, status codes, slow first tokens, cut streams, stalls with keep-alives, malformed chunks, error events inside a 200 stream.
+- mockllm with injectable faults: error rates, status codes, slow first tokens, cut streams, stalls with keep-alives, malformed chunks, error events inside a 200 stream, hangs, flapping, recorded-stream replay, and real refused connections through a TCP gate.
+- `switchyard-chaos`: outage scenarios with fixed targets, judged on 95% intervals, with JSON and Markdown reports.
 
 What doesn't work yet is in [LIMITATIONS.md](LIMITATIONS.md).
 
@@ -64,6 +76,7 @@ What doesn't work yet is in [LIMITATIONS.md](LIMITATIONS.md).
 uv sync
 uv run pytest                        # unit, contract and end-to-end tests
 uv run python -m bench.overhead      # gateway overhead against mockllm
+uv run switchyard-chaos run chaos/scenarios/s1.yaml   # needs compose (or the same stack) running
 uv run python -m eval.seam.spike --dry-run   # the week 1 seam test, offline
 ```
 

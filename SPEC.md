@@ -1,6 +1,6 @@
 # Switchyard: spec
 
-Status: v2.1, week 2 done · Owner: Zhan Kuatuly · Last updated: 2026-10-28 · Changes from v1 are listed in section 21.
+Status: v2.2, week 3 built · Owner: Zhan Kuatuly · Last updated: 2026-10-28 · Changes from v1 are listed in section 21.
 
 ## 1. Summary
 
@@ -61,7 +61,8 @@ They connect through one integration. Dastar's agent milestone plans an Anthropi
 | Targets | Pass when the lower bound of the 95% interval clears the target | A flat 99.5% on 100 requests is decided by one failure | Larger request counts per scenario |
 | Reasoning models | Not in v1 route groups | Their long silent thinking looks like a stall | Fewer models covered |
 | Baseline | LiteLLM's proxy, pinned, two configs, both endpoints | Answers "why not LiteLLM?" fairly | LiteLLM must be configured and described fairly |
-| Shared state | Redis, with an in-process fallback | Breakers shared across replicas; no single point of failure | Two code paths for state |
+| Shared state | Redis, synced in the background every 0.5 s, with an in-process copy | Breakers shared across replicas; no Redis call on the request path; no single point of failure | Replicas agree within about 0.5 s, not instantly |
+| Non-streaming requests | Read from the provider as a stream (decision 5) | First-token and stall limits catch a hung provider on every request, not only streamed ones | About 4 ms more at 100 req/s against mockllm, from reading the stream; see 13 |
 | Durable records | Postgres | Request and attempt records; cost queries | Write volume, handled by batching |
 | Config | YAML validated with Pydantic, hot reload | Policy changes without a deploy | |
 | Deployment | Local Docker Compose plus a recorded video | No hosting cost | No public live demo |
@@ -199,7 +200,7 @@ Admin endpoints use a separate admin key. Tenants, keys and features live in the
 
 - `GET /healthz`, `GET /readyz`, `GET /metrics`
 - `GET /admin/providers`: health, breaker state and cooldowns per provider and model
-- `POST /admin/providers/{id}/breaker` with `{"force": "open" | "closed" | "auto"}`
+- `POST /admin/providers/{provider/model}/breaker` with `{"force": "open" | "closed" | "auto"}`. Forcing closed also resets the model's window, so returning to `auto` starts clean; the scenario CLI does this before each seed
 - `POST /admin/config/reload`
 
 ### 6.3 Chaos control (mockllm only)
@@ -207,6 +208,8 @@ Admin endpoints use a separate admin key. Tenants, keys and features live in the
 `POST /chaos` with `{"mode": ..., "params": ..., "duration_s": ...}`.
 
 Modes: `error_rate`, `status` (429 with `Retry-After`, 500, 529), `ttft_ms`, `cut_after_tokens`, `stall_after_tokens`, `malformed_chunk`, `error_event` (an Anthropic-style error event inside a 200 stream), `refuse_connections`, `hang` (accept the connection and never answer), `flap` (with `period_s`), and `replay` (play back a recorded real stream, optionally cut at a given point).
+
+`refuse_connections` and `flap` with `down: refuse` need gate mode (`python -m mockllm --port 8001 --control-port 8101`): an HTTP app can't refuse a TCP connection, so a gate on the public port forwards bytes to the app and closes its listening socket on command. Faults go to the control port. `params.seed` reseeds the random choices, so a seed injects the same failures every run. `GET /stats` counts requests and, separately, probes (`max_tokens: 1`).
 
 ## 7. Core behavior
 
@@ -281,7 +284,7 @@ stateDiagram-v2
 - **Trip rules,** any one of:
   - in the last 60 s, at least 10 requests and at least 40% of them failed with retryable errors (below S1's 50% error rate, so S1 trips reliably);
   - 5 retryable failures in a row (so low real traffic can still trip it);
-  - p95 time to first token above its budget in two consecutive, non-overlapping 30-second periods.
+  - p95 time to first token above its budget in two consecutive, non-overlapping 30-second periods, each with at least 10 samples. Periods are aligned to multiples of 30 s and only whole periods count. The budget is the route's first-token timeout, so a sample over budget is a first-token timeout, and the rule reads: more than 5% of attempts timed out before the first token in each of two periods.
 - **While open,** no user traffic goes to the provider. The prober sends a tiny request (`max_tokens: 1`) every 10 s, with a 5 s timeout. Three successful probes in a row close the breaker. There is no doubling backoff.
 - **Worst-case recovery,** from the moment the provider is healthy again:
 
@@ -291,16 +294,20 @@ stateDiagram-v2
 
   where `P` is the probe interval, `k` the successes needed and `t_probe` the probe timeout. The S4 and S8 targets are derived from this.
 - **Probe cost:** 6 tiny requests a minute per open provider and model, recorded with cost class `probe`.
-- **429 with `Retry-After`** is a quota signal, not a health signal. It puts that provider and model in a cooldown until the given time, separate from the breaker, and doesn't count toward the trip rules.
-- **Not counted:** client errors (400, 404, 413), content filters and refusals. 401 and 403 mark the API key as bad and raise an alert.
-- **Shared state:** breaker state is changed in Redis with a compare-and-set Lua script, and each replica keeps an in-process copy. If Redis is unreachable, each replica decides from its own copy (fail open) until Redis returns.
+- **429 with `Retry-After`** is a quota signal, not a health signal. It puts that provider and model in a cooldown until the given time, separate from the breaker, and doesn't count toward the trip rules. A 429 without `Retry-After` cools down for 10 s.
+- **Not counted:** client errors (400, 404, 413), content filters and refusals. 401 and 403 mean Switchyard's own key is bad: the model cools down for 60 s, the request fails over, and an error is logged.
+- **5 failures in a row** count however far apart they are (nothing succeeded in between), and are counted per replica. A breaker that closes forgets its window, so old failures can't trip it again at once.
+- **Shared state:** the request path never calls Redis. Each replica decides from its in-process copy, and a background task syncs every 0.5 s: health counts go into per-bucket Redis hashes and the merged window comes back in one pipelined round trip; a local transition is written with a compare-and-set Lua script on the record's version, and the newer change wins a conflict. One replica probes an open model per round (`SET NX`), and a second Lua script applies the probe result, so the success streak survives a change of prober. If Redis is unreachable, each replica decides from its own copy (fail open) and sends its unsent counts when Redis returns. Cooldowns stay per replica.
 - Every transition is logged, counted in metrics, and can be forced from the admin API.
 
 ### 7.5 Retries and failover
 
 - **Same-provider retries** happen only before the first token, only for connection errors, timeouts, 5xx and 529, at most once per attempt, with exponential backoff and full jitter (base 200 ms, cap 2 s).
 - **Retry budget:** same-provider retries may add at most 20% load to one provider and model, measured over a rolling minute. It protects a struggling provider from being hit again. When it is spent, the runner fails over instead of retrying.
-- **Failover** to the next healthy candidate is immediate and is not limited by the retry budget. It is bounded by the attempt cap (3 attempts per request) and by the breakers. Skipping an open or cooling-down candidate is not an attempt.
+- **Failover** to the next healthy candidate is immediate and is not limited by the retry budget. It is bounded by the attempt cap (3 attempts per request, retries included) and by the breakers. Skipping an open or cooling-down candidate is not an attempt.
+- **The retry budget has a floor** of 3 retries per model per minute, so a lone failure at low traffic can still be retried (Finagle's budget has the same floor).
+- **Failover kinds:** connection errors, timeouts, stalls, 5xx and error events, malformed chunks and invalid JSON, 429s and bad provider keys. Never a client error (it would fail anywhere) or a missed request deadline.
+- **Commit point:** an attempt is committed once the client could see something: the first text or refusal, the first complete tool call, or the end of the answer (for non-streaming requests and JSON, the end, after validation). A failure before that is invisible and fails over; after it, it is a mid-stream failure (7.6).
 - **Never fail over a refusal or a content filter.** Sending a refused request to another provider to get around its filter is a policy decision, not a reliability feature.
 - A unit test replays S1's arrival pattern against this policy math before any networking exists, and shows S1's target is reachable.
 
@@ -423,10 +430,12 @@ breaker_events(id, provider_model, from_state, to_state, reason, at)
 
 **Common rules**
 
-- Each scenario runs with 5 seeds. Every scenario file states its request rate, duration, request count and topology (which upstreams are mock and which are real).
+- Each scenario runs with 5 seeds. Every scenario file states its request rate, duration, request count and topology (which upstreams are mock and which are real). Files are in `chaos/scenarios/`.
+- **Mock topology:** two `mockllm` servers, one per model in the `mock` route (mock-a first, mock-b second). Each runs behind a TCP gate (`python -m mockllm`), so `refuse_connections` closes a real listening socket and resets open connections, and faults are switched on a separate control port that stays up.
 - **Success** means the response completed with `finish_reason` of `stop` or `length` and no error event.
 - **Repeated text** means any span of 8 or more tokens in the continuation that also appears in the last 300 tokens of `emitted_text`.
-- **Verdict:** pass when the lower bound of the 95% interval clears the target; inconclusive when there are too few samples. Exit codes: 0 pass, 1 fail or invalid run, 2 usage error, 3 inconclusive.
+- **Verdict:** pass when the lower bound of the 95% (Wilson) interval clears the target; inconclusive when there are too few samples for even a perfect run to clear it (380 requests for a 99% target). Shares pool all seeds; times (breaker opening and closing, recovery) are judged on the worst seed. A time target on requests ("503 within 1 s") is a share of the requests in its window, with the same lower-bound rule. Exit codes: 0 pass, 1 fail or invalid run, 2 usage error, 3 inconclusive.
+- **Requests are judged by when they were sent,** in seconds from the start of traffic. Upstream attempts are counted at the mockllm servers, probes excluded, so the count is the same for any gateway.
 - Request lengths come from a synthetic distribution; `mockllm` ignores prompt content, so real prompts only matter for the seam evaluation.
 - The scenario files and targets are committed and tagged before the first run, so the history proves they were fixed in advance.
 
@@ -436,7 +445,7 @@ breaker_events(id, provider_model, from_state, to_state, reason, at)
 | S4 | v0.1 | Primary refuses connections for 5 min, then recovers | 10 req/s for 7 min, mock upstreams | Success lower bound ≥ 99%; breaker opens within 10 s; closes within 45 s of recovery (35 s by formula, plus margin) |
 | S5 | v0.1 | Primary's stream is cut at a random 20 to 80% of the answer | (a) 5 req/s for 120 s on mocks; (b) recorded real streams, cut and continued on real providers | (a) completion lower bound ≥ 99%. (b) a measurement, not pass or fail: repeated-text rate and seamless rate by strategy |
 | S6 | v0.1 | Primary stops sending tokens mid-stream without closing | Same as S5 | Same as S5; stall detected within the stall timeout plus 1 s |
-| S8 | v0.1 | All providers fail for 3 min, in two variants: refusing connections, and hanging | 10 req/s for 5 min, mock upstreams | Refusing: 503 within 1 s. Hanging: 503 within the time-to-first-token budget plus 1 s. Attempts ≤ 1.2× requests. Normal service within 45 s of recovery |
+| S8 | v0.1 | All providers fail for 3 min (from 60 s to 240 s), in two variants: refusing connections, and hanging | 10 req/s for 5 min, mock upstreams | Refusing: lower bound ≥ 99% of requests sent during the outage get 503 within 1 s. Hanging: the same within the time-to-first-token budget plus 1 s (6 s), for requests sent from 15 s into the outage; before that, each attempt costs a full 5 s first-token timeout until both breakers open, so the first requests wait up to about 15 s, reported separately. Attempts ≤ 1.2× requests over the whole run. Normal service within 45 s of recovery |
 | S2 | v1 | Primary returns 429 with `Retry-After: 30` for 2 min | 10 req/s for 4 min | Success lower bound ≥ 99%; no same-provider retries during the cooldown |
 | S7 | v1 | Primary alternates 20 s healthy and 20 s down for 5 min | 10 req/s for 6 min | Success lower bound ≥ 98%; at most 2 breaker transitions per cycle |
 | S10 | v1 | Redis unavailable for 60 s | 10 req/s for 3 min | Success lower bound ≥ 99%; breakers keep working from local state |
@@ -625,6 +634,16 @@ After week 2, 2026-10-28:
 - mockllm lives in `src/mockllm`. Postgres records moved to week 3.
 - Models whose provider key isn't set are skipped when routing, so a route group works with whichever keys are configured.
 - An independent code review found 15 issues; all are fixed and each has a test. The larger ones: a JSON-mode refusal was treated as a provider failure; Anthropic tool calls without arguments streamed as an empty string instead of `{}`; tool history sent to Anthropic without `tools` would be rejected; failed attempts that were never billed were counted as wasted cost; and JSON-mode streams committed to HTTP 200 before the answer was validated.
+
+Week 3, 2026-10-28:
+
+- S8's hanging variant is judged from 15 s into the outage. Until both breakers open, each attempt costs a full 5 s first-token timeout, so the first requests wait up to about 15 s; the old target could not be met by any design with these timeouts. Those requests are reported separately.
+- Time targets on requests ("503 within 1 s") are shares with the 95% lower-bound rule, like the success targets. Inconclusive means too few requests for a perfect run to pass.
+- Non-streaming requests are read from the provider as a stream, so first-token and stall limits apply to them (decision 5). Measured cost: about 4 ms more at 100 req/s against mockllm.
+- The request path never calls Redis: replicas sync every 0.5 s in the background (decision 6). The consecutive-failure rule and cooldowns are per replica.
+- Every upstream call counts toward the 3-attempt cap, retries included. The retry budget has a floor of 3 per model per minute. A 429 without `Retry-After` cools down for 10 s; a 401 or 403 cools down for 60 s and fails over.
+- With the budget equal to the first-token timeout, trip rule 3 means more than 5% first-token timeouts in two whole 30 s periods with at least 10 samples each.
+- mockllm runs as two servers behind TCP gates, so `refuse_connections` is a real refused connection. `flap` and `replay` added.
 
 ## References
 
