@@ -1,6 +1,6 @@
 # Switchyard: spec
 
-Status: v2.1, week 1 done · Owner: Zhan Kuatuly · Last updated: 2026-10-23 · Changes from v1 are listed in section 21.
+Status: v2.1, week 2 done · Owner: Zhan Kuatuly · Last updated: 2026-10-28 · Changes from v1 are listed in section 21.
 
 ## 1. Summary
 
@@ -52,7 +52,7 @@ They connect through one integration. Dastar's agent milestone plans an Anthropi
 | Decision | Choice | Why | What it costs |
 | --- | --- | --- | --- |
 | Language | Python 3.12, FastAPI, asyncio | Main stack, fastest to ship, matches the other five projects | Overhead in milliseconds, not microseconds |
-| Provider access | Own adapters over httpx | Full control of streams, required for continuation strategies | Fewer providers |
+| Provider access | Own adapters over aiohttp | Full control of streams, required for continuation strategies; httpx used about twelve times the CPU per stream (decision 4) | Fewer providers |
 | Providers in v0.1 | OpenAI, Anthropic and DeepSeek, plus `mockllm` | Three families for the seam pairs and the judges; DeepSeek is the only hosted API with documented native continuation; its API is OpenAI-compatible, so the adapter is small | No local model until stretch |
 | Headline | Measured comparison of continuation strategies | The feature exists elsewhere; the measurement doesn't | The result may be negative, and is published either way |
 | JSON answers | Buffer the whole answer; on failure, restart cleanly on the next provider | A continued JSON fragment can't be validated, and JSON clients rarely need token streaming | No streaming for JSON requests |
@@ -183,6 +183,13 @@ data: [DONE]
 | `deadline_exceeded` | 504, or an error event mid-stream | The request deadline passed |
 | `upstream_rejected` | 400 | The provider rejected the request as invalid; passed through |
 | `content_filtered` | The provider's status | A filter or refusal; passed through, never continued, never failed over |
+| `upstream_auth_failed` | 502 | The provider rejected Switchyard's own key; the client can't fix this |
+| `invalid_api_key` | 401 | The tenant key is missing or unknown |
+| `missing_feature` | 400 | No `X-Switchyard-Feature` header |
+| `model_not_found` | 404 | The model is neither a route group nor a configured `provider/model` |
+| `unsupported_feature` | 400 | No model in the route supports what the request needs (tools, a JSON mode) |
+| `provider_not_configured` | 503 | The models that could serve the request all belong to providers whose API key isn't set |
+| `invalid_request` | 400 | The body is invalid, or asks for something rejected in the request fields table |
 
 **Refusals and filters inside a 200 stream** are detected from Anthropic's `stop_reason: refusal` and OpenAI's `finish_reason: content_filter` or `refusal` field. They end the stream as they are.
 
@@ -216,30 +223,31 @@ One request class in v0.1. Defaults live in config per route group:
 
 ### 7.2 Route groups and model capabilities
 
+Abridged from `config/switchyard.yaml`:
+
 ```yaml
 route_groups:
-  chat-smart:
-    - anthropic/<current mid-tier model>
-    - openai/<current mid-tier model>
-    - deepseek/deepseek-flash
+  chat-fast:
+    models: [anthropic/claude-haiku-5-5, openai/gpt-6-luna, deepseek/deepseek-flash]
     default_max_tokens: 1024
+    # Optional, with these defaults: request_deadline_s 120, ttft_timeout_s 5, stall_timeout_s 5
 models:
-  anthropic/<current mid-tier model>:
-    tools: true
-    json: true
-    max_context: 200000
-    sampling_params: false     # newest Claude models reject temperature and top_p; the adapter drops them
-    continuation: instructed   # Claude 4.6 and later reject prefill with a 400
-  openai/<current mid-tier model>:
-    tools: true
-    json: true
-    continuation: instructed   # no documented continuation parameter
+  anthropic/claude-haiku-5-5:
+    sampling_params: false   # Claude Haiku 5.5 rejects temperature, top_p and top_k
+    json_object: false       # JSON only with a schema
+    continuation: instructed # Claude 4.6 and later reject prefill with a 400
+    request_overrides:       # merged into every request body
+      thinking: { type: disabled }
+  openai/gpt-6-luna:
+    request_overrides: { reasoning_effort: none }
   deepseek/deepseek-flash:
-    tools: true
-    json: true
-    thinking: disabled         # thinking is on by default; v1 has no reasoning models
-    continuation: native       # beta prefix completion; the evaluation decides whether to keep it
+    json_schema: false       # json_object only
+    continuation: native     # beta prefix completion; the evaluation decides whether to keep it
+    request_overrides:
+      thinking: { type: disabled }
 ```
+
+Capability flags default to on: `tools`, `json_object`, `json_schema`, `sampling_params`.
 
 **DeepSeek adapter.** DeepSeek's API is OpenAI-compatible, so its adapter extends the OpenAI one with four differences:
 
@@ -475,6 +483,7 @@ Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, 
 - Gateway overhead p95 under 10 ms for non-streaming requests, and under 10 ms added to time to first token when streaming, against `mockllm` with fixed latency at 200 requests per second on one 4-vCPU container.
 - Measure this early in week 2, on the first working proxy, so a miss changes the design early instead of the README late.
 - Report the maximum requests per second before overhead p95 passes 25 ms.
+- **Week 2 result** ([report](docs/results/overhead-2026-10-28.md)), on a shared 2-vCPU machine with mockllm and the load generator on it too, 32-token answers: at 200 streamed requests a second, 1.7 ms at p50 and 2.6 ms at p95 added to time to first token; non-streaming, 1.0 ms and 1.1 ms. p95 passes 25 ms at about 300 a second. The first version, on httpx, collapsed between 150 and 200 a second, which led to decision 4.
 - Be upfront in the README: Go gateways claim microsecond overhead. Switchyard targets milliseconds and competes on behavior under failure.
 
 ## 14. Testing
@@ -500,7 +509,8 @@ switchyard/
   README.md
   SPEC.md
   LIMITATIONS.md
-  docker-compose.yml
+  compose.yml
+  Dockerfile
   pyproject.toml
   config/
     switchyard.yaml
@@ -508,19 +518,22 @@ switchyard/
   src/switchyard/
     api/            routes, schemas, auth
     core/           canonical types, router, retries, failover
-    providers/      base.py, openai.py, anthropic.py, deepseek.py, mock.py
+    providers/      base.py, errors.py, sse.py, openai.py (OpenAI and DeepSeek), anthropic.py
     resilience/     health.py, breaker.py, prober.py
     streaming/      relay.py, strategies.py, seam.py
-    accounting/     pricing.py, usage.py, tokenize.py
+    accounting/     pricing.py, usage.py
     observability/  metrics.py, logging.py
     config.py
-  mockllm/          fake provider with chaos controls and stream replay
+  src/mockllm/      fake provider with chaos controls (stream replay later)
   chaos/            scenario files, runner CLI, report generator
   eval/seam/        week 1 spike, prompt set, cuts, runner, judges, hand labels
   baselines/        litellm/ configs and compose file
   grafana/          dashboard and provisioning
-  tests/            unit/, contract/, integration/
-  docs/             architecture.md, decisions/, results/
+  tests/            unit/, contract/, integration/, fixtures/
+  bench/            gateway overhead benchmark
+  scripts/          record_stream.py for contract fixtures
+  deploy/           prometheus.yml
+  docs/             decisions/, results/
 ```
 
 ## 16. Milestones
@@ -530,8 +543,8 @@ Planned in hours, at 10 to 12 hours a week.
 | Week | Hours | Milestone | Done when |
 | --- | --- | --- | --- |
 | 1 | 10 to 12 | Seam test | Done 2026-10-23: [report](eval/seam/results/20261023-050151/report.md) with joins and a go note. The overhead stub moved to week 2 |
-| 2 | 10 to 12 | Proxy | OpenAI, Anthropic and DeepSeek adapters, streaming and non-streaming, text and JSON; `mockllm`; tenants and features; cost with estimated usage; `/metrics`; gateway overhead measured early, so a miss changes the design; CI green |
-| 3 | 10 to 12 | Resilience | Health, breaker with probes, retries, failover, stall detection; S1, S4 and S8 pass on mocks |
+| 2 | 10 to 12 | Proxy | Done 2026-10-28: OpenAI, Anthropic and DeepSeek adapters, streaming and non-streaming, tools and JSON; `mockllm` with faults; tenants and features; cost with estimated usage; `/metrics`; first-token, stall and deadline limits; overhead measured; Docker image and compose file; CI green |
+| 3 | 10 to 12 | Resilience | Health, breaker with probes, retries, failover; request and attempt records in Postgres; S1, S4 and S8 pass on mocks |
 | 4 | 10 to 12 | Mid-stream | Strategies, seam repair, tool-call rules, heartbeats; S5 and S6 pass on mocks; the first seam evaluation on real providers, on fresh prompts and including A |
 | 5 | 10 to 12 | v0.1 release | LiteLLM baseline with two configs and both endpoints; results tables; README, diagram, video, LIMITATIONS; tag v0.1 |
 
@@ -601,6 +614,17 @@ After the week 1 seam test, 2026-10-23:
 - Week 1 result recorded in 12.1: go.
 - Strategy A (anchored) added to the comparison, and seam repair rules added from the run's joins (section 7.6).
 - The overhead stub moved from week 1 to early week 2.
+
+After week 2, 2026-10-28:
+
+- Upstream calls use aiohttp instead of httpx: the first overhead measurement collapsed between 150 and 200 streamed requests a second, and httpx used about twelve times the CPU per stream (decision 4).
+- Stall detection was built in week 2, not week 3, since the stream watcher needed it anyway.
+- The gateway waits for the provider's first event before answering a stream, so failures before the first token get real status codes (decision 2).
+- Capability flags split JSON into `json_object` and `json_schema`; `request_overrides` replaces per-provider options such as turning thinking off.
+- New error codes in 6.1, including `upstream_auth_failed` for a bad provider key.
+- mockllm lives in `src/mockllm`. Postgres records moved to week 3.
+- Models whose provider key isn't set are skipped when routing, so a route group works with whichever keys are configured.
+- An independent code review found 15 issues; all are fixed and each has a test. The larger ones: a JSON-mode refusal was treated as a provider failure; Anthropic tool calls without arguments streamed as an empty string instead of `{}`; tool history sent to Anthropic without `tools` would be rejected; failed attempts that were never billed were counted as wasted cost; and JSON-mode streams committed to HTTP 200 before the answer was validated.
 
 ## References
 
