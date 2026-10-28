@@ -1,6 +1,6 @@
 # Switchyard: spec
 
-Status: v2.2, week 3 built · Owner: Zhan Kuatuly · Last updated: 2026-10-28 · Changes from v1 are listed in section 21.
+Status: v2.2, week 3 done · Owner: Zhan Kuatuly · Last updated: 2026-10-28 · Changes from v1 are listed in section 21.
 
 ## 1. Summary
 
@@ -553,7 +553,7 @@ Planned in hours, at 10 to 12 hours a week.
 | --- | --- | --- | --- |
 | 1 | 10 to 12 | Seam test | Done 2026-10-23: [report](eval/seam/results/20261023-050151/report.md) with joins and a go note. The overhead stub moved to week 2 |
 | 2 | 10 to 12 | Proxy | Done 2026-10-28: OpenAI, Anthropic and DeepSeek adapters, streaming and non-streaming, tools and JSON; `mockllm` with faults; tenants and features; cost with estimated usage; `/metrics`; first-token, stall and deadline limits; overhead measured; Docker image and compose file; CI green |
-| 3 | 10 to 12 | Resilience | Health, breaker with probes, retries, failover; request and attempt records in Postgres; S1, S4 and S8 pass on mocks |
+| 3 | 10 to 12 | Resilience | Done 2026-10-28: health, breakers with probes, retries, failover, Redis shared state and Postgres records; S1, S4 and S8 pass on mocks, 5 seeds each ([results](docs/results/scenarios-2026-10-28.md)) |
 | 4 | 10 to 12 | Mid-stream | Strategies, seam repair, tool-call rules, heartbeats; S5 and S6 pass on mocks; the first seam evaluation on real providers, on fresh prompts and including A |
 | 5 | 10 to 12 | v0.1 release | LiteLLM baseline with two configs and both endpoints; results tables; README, diagram, video, LIMITATIONS; tag v0.1 |
 
@@ -644,6 +644,8 @@ Week 3, 2026-10-28:
 - Every upstream call counts toward the 3-attempt cap, retries included. The retry budget has a floor of 3 per model per minute. A 429 without `Retry-After` cools down for 10 s; a 401 or 403 cools down for 60 s and fails over.
 - With the budget equal to the first-token timeout, trip rule 3 means more than 5% first-token timeouts in two whole 30 s periods with at least 10 samples each.
 - mockllm runs as two servers behind TCP gates, so `refuse_connections` is a real refused connection. `flap` and `replay` added.
+- Results: S1, S4, S8-refuse and S8-hang all pass with 5 seeds ([results](docs/results/scenarios-2026-10-28.md)). The one S4 miss is a stream cut mid-answer, left for week 4.
+- Scenario attempts are counted at the gateway when it is Switchyard: a mock can't count a connection it refused. Against another gateway the mock-side count is used and the report says so.
 
 ## References
 

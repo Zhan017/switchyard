@@ -34,4 +34,5 @@ What Switchyard does not do, or does only partly, as of week 3. Each item says w
 
 - **Provider stream fixtures are written from the providers' documentation,** not recorded. `scripts/record_stream.py` records real streams; recorded fixtures will be added next to the written ones.
 - **Gateway overhead was measured on a shared 2-vCPU machine,** with mockllm and the load generator on the same machine. Treat the numbers as an upper bound; see `docs/results/`. After week 3, non-streaming overhead at 200 requests a second (p95 22 ms) is over the 10 ms target on that machine; it hasn't been measured on the 4-vCPU container the target names.
+- **Against another gateway, attempts during a refused-connection outage are undercounted.** The scenario CLI counts attempts at the gateway when it is Switchyard, and otherwise at the mock servers, which can't see a connection they refused. The report says which count it used.
 - **Outage scenarios run against mockllm,** not real providers. `refuse_connections` is a real refused TCP connection (mockllm's gate), but real providers fail in ways a mock doesn't imitate.
