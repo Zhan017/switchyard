@@ -1,0 +1,35 @@
+# USD per million tokens, checked on the date below from each provider's pricing page.
+# Re-check monthly and compare totals with the providers' bills.
+checked: 2026-10-22
+
+models:
+  anthropic/claude-haiku-5-5:
+    input: 0.10
+    cached_input: 0.01
+    cache_write: 0.125 # 5-minute cache write
+    output: 0.50
+    # Prompts over 100K tokens are billed at the higher rate for every token in the request.
+    long_context:
+      above_input_tokens: 100000
+      input: 0.50
+      cached_input: 0.05
+      cache_write: 0.625
+      output: 2.50
+  openai/gpt-6-luna:
+    input: 0.10
+    cached_input: 0.01
+    cache_write: 0.125
+    output: 0.50
+  deepseek/deepseek-flash:
+    # Peak rates. Off-peak is half: every hour outside the peak windows, and weekends.
+    # Chinese public holidays are also off-peak; they are not modeled here.
+    input: 0.30
+    cached_input: 0.006
+    output: 1.20
+    off_peak:
+      input: 0.15
+      cached_input: 0.003
+      output: 0.60
+      peak_hours_utc: [[1, 4], [6, 10]] # Monday to Friday
+  mock/mock-a: { input: 0, output: 0 }
+  mock/mock-b: { input: 0, output: 0 }

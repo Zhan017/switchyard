@@ -1,0 +1,28 @@
+# Test config: everything points at an in-test mockllm server.
+providers:
+  mock:
+    type: openai
+    base_url: ${MOCKLLM_URL}/v1
+  anthropic:
+    type: anthropic
+    base_url: https://anthropic.invalid
+    api_key_env: TEST_ANTHROPIC_KEY
+models:
+  mock/mock-a: {}
+  mock/mock-b: { tools: false, json_schema: false }
+  anthropic/claude-test: { sampling_params: false, json_object: false }
+route_groups:
+  mock:
+    models: [mock/mock-a, mock/mock-b]
+    default_max_tokens: 64
+    ttft_timeout_s: 1.0
+    stall_timeout_s: 0.5
+    request_deadline_s: 5
+  plain:
+    models: [mock/mock-b]
+tenants:
+  - name: team-a
+    key_sha256: 5cbec0ae7e5d32e771ce65b153958d2da52b3f702fdc2867bae3de9e66b8ea9b # sy-dev-local-key
+    features: [chat]
+admin_key_sha256: 7f9ce6a78a65dd67a21999c968266dc87302d59ece921c36a7bf82373df37ee8 # sy-admin-local-key
+prices_file: prices.yaml

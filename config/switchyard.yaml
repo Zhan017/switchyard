@@ -1,0 +1,54 @@
+# Switchyard configuration. Validated as a whole on start and on reload.
+# ${NAME:-default} is replaced with the environment variable NAME.
+
+providers:
+  openai:
+    type: openai
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+  anthropic:
+    type: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+  deepseek:
+    type: deepseek
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+  # A fake OpenAI-compatible provider you can break on command (src/mockllm).
+  mock:
+    type: openai
+    base_url: ${MOCKLLM_URL:-http://localhost:8001}/v1
+
+models:
+  anthropic/claude-haiku-5-5:
+    sampling_params: false # Claude Haiku 5.5 rejects temperature, top_p and top_k
+    json_object: false # no schema-less JSON mode; json_schema works
+    request_overrides:
+      thinking: { type: disabled } # on by default; v1 has no reasoning models
+  openai/gpt-6-luna:
+    request_overrides:
+      reasoning_effort: none
+  deepseek/deepseek-flash:
+    json_schema: false # json_object only
+    continuation: native # beta prefix completion
+    request_overrides:
+      thinking: { type: disabled }
+  mock/mock-a: {}
+  mock/mock-b: {}
+
+route_groups:
+  chat-fast:
+    models: [anthropic/claude-haiku-5-5, openai/gpt-6-luna, deepseek/deepseek-flash]
+    default_max_tokens: 1024
+  mock:
+    models: [mock/mock-a, mock/mock-b]
+    default_max_tokens: 256
+
+# Keys are stored as SHA-256 hashes: python -m switchyard.config hash <key>
+tenants:
+  - name: local
+    key_sha256: 5cbec0ae7e5d32e771ce65b153958d2da52b3f702fdc2867bae3de9e66b8ea9b # sy-dev-local-key
+    features: [chat, eval, bench]
+
+admin_key_sha256: 7f9ce6a78a65dd67a21999c968266dc87302d59ece921c36a7bf82373df37ee8 # sy-admin-local-key
+prices_file: prices.yaml # relative to this file

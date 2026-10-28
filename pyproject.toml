@@ -7,13 +7,19 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [{ name = "Zhan Kuatuly" }]
 dependencies = [
+    "aiohttp>=3.11",
+    "fastapi>=0.115",
     "httpx>=0.28",
+    "orjson>=3.10",
+    "prometheus-client>=0.21",
     "pyyaml>=6.0",
+    "uvicorn[standard]>=0.32",
 ]
 
 [dependency-groups]
 dev = [
     "mypy>=1.13",
+    "openai>=1.60",
     "pytest>=8.3",
     "ruff>=0.8",
     "types-pyyaml>=6.0",
@@ -24,7 +30,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/switchyard"]
+packages = ["src/switchyard", "src/mockllm"]
 
 [tool.ruff]
 line-length = 100
@@ -36,7 +42,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "eval", "tests"]
+files = ["src", "eval", "tests", "bench", "scripts"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
