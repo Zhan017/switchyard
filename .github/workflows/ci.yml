@@ -15,6 +15,26 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
-      - run: uv run pytest
+      - name: Unit, contract and integration tests
+        run: uv run pytest
       - name: Seam test, dry run
         run: uv run python -m eval.seam.spike --dry-run --limit 3 --out "$RUNNER_TEMP/seam-dry"
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t switchyard:ci .
+      - name: Smoke test the image
+        run: |
+          docker network create sy
+          docker run -d --name mockllm --network sy switchyard:ci \
+            uvicorn --factory mockllm.app:app_from_env --host 0.0.0.0 --port 8001
+          docker run -d --name switchyard --network sy -p 8000:8000 \
+            -e MOCKLLM_URL=http://mockllm:8001 switchyard:ci
+          for i in $(seq 1 30); do curl -sf localhost:8000/healthz && break; sleep 1; done
+          curl -sf localhost:8000/v1/chat/completions \
+            -H 'authorization: Bearer sy-dev-local-key' -H 'x-switchyard-feature: chat' \
+            -H 'content-type: application/json' \
+            -d '{"model":"mock","messages":[{"role":"user","content":"hi"}],"stream":true}' \
+            | tail -c 300

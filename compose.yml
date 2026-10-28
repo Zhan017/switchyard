@@ -1,0 +1,37 @@
+# docker compose up: the gateway on :8000, mockllm on :8001, Prometheus on :9090.
+# Provider keys come from .env; without them only the mock route works.
+# Ports bind to localhost only: config/switchyard.yaml ships development keys.
+services:
+  switchyard:
+    build: .
+    ports: ["127.0.0.1:8000:8000"]
+    environment:
+      MOCKLLM_URL: http://mockllm:8001
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    depends_on:
+      mockllm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  mockllm:
+    build: .
+    command: ["uvicorn", "--factory", "mockllm.app:app_from_env", "--host", "0.0.0.0", "--port", "8001", "--no-access-log"]
+    ports: ["127.0.0.1:8001:8001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports: ["127.0.0.1:9090:9090"]
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on: [switchyard]
