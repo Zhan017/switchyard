@@ -1,4 +1,5 @@
-# docker compose up: the gateway on :8000, mockllm on :8001, Prometheus on :9090.
+# docker compose up: the gateway on :8000, two mockllm providers on :8001 and :8002 (their
+# fault controls on :8101 and :8102), Prometheus on :9090, Redis and Postgres.
 # Provider keys come from .env; without them only the mock route works.
 # Ports bind to localhost only: config/switchyard.yaml ships development keys.
 services:
@@ -6,25 +7,58 @@ services:
     build: .
     ports: ["127.0.0.1:8000:8000"]
     environment:
-      MOCKLLM_URL: http://mockllm:8001
+      MOCKLLM_A_URL: http://mockllm-a:8001
+      MOCKLLM_B_URL: http://mockllm-b:8001
+      SWITCHYARD_REDIS_URL: redis://redis:6379/0
+      SWITCHYARD_DATABASE_URL: postgresql://switchyard:switchyard@postgres:5432/switchyard
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     depends_on:
-      mockllm:
-        condition: service_healthy
+      mockllm-a: { condition: service_healthy }
+      mockllm-b: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
       interval: 5s
       timeout: 2s
       retries: 10
 
-  mockllm:
+  # Each mockllm serves clients on 8001 through a gate that can refuse connections, and
+  # takes faults on 8101, which stays up while the gate refuses.
+  mockllm-a: &mockllm
     build: .
-    command: ["uvicorn", "--factory", "mockllm.app:app_from_env", "--host", "0.0.0.0", "--port", "8001", "--no-access-log"]
-    ports: ["127.0.0.1:8001:8001"]
+    command: ["python", "-m", "mockllm", "--port", "8001", "--control-port", "8101"]
+    ports: ["127.0.0.1:8001:8001", "127.0.0.1:8101:8101"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/healthz')"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  mockllm-b:
+    <<: *mockllm
+    ports: ["127.0.0.1:8002:8001", "127.0.0.1:8102:8101"]
+
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    ports: ["127.0.0.1:5432:5432"]
+    environment:
+      POSTGRES_USER: switchyard
+      POSTGRES_PASSWORD: switchyard # development only, like the keys in the config
+      POSTGRES_DB: switchyard
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "switchyard"]
       interval: 5s
       timeout: 2s
       retries: 10

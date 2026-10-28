@@ -14,10 +14,14 @@ providers:
     type: deepseek
     base_url: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
-  # A fake OpenAI-compatible provider you can break on command (src/mockllm).
-  mock:
+  # Two fake OpenAI-compatible providers you can break on command (src/mockllm). They are
+  # separate servers, so one can refuse connections while the other serves.
+  mock-a:
     type: openai
-    base_url: ${MOCKLLM_URL:-http://localhost:8001}/v1
+    base_url: ${MOCKLLM_A_URL:-http://localhost:8001}/v1
+  mock-b:
+    type: openai
+    base_url: ${MOCKLLM_B_URL:-http://localhost:8002}/v1
 
 models:
   anthropic/claude-haiku-5-5:
@@ -33,22 +37,45 @@ models:
     continuation: native # beta prefix completion
     request_overrides:
       thinking: { type: disabled }
-  mock/mock-a: {}
-  mock/mock-b: {}
+  mock-a/mock: {}
+  mock-b/mock: {}
 
 route_groups:
   chat-fast:
     models: [anthropic/claude-haiku-5-5, openai/gpt-6-luna, deepseek/deepseek-flash]
     default_max_tokens: 1024
   mock:
-    models: [mock/mock-a, mock/mock-b]
+    models: [mock-a/mock, mock-b/mock]
     default_max_tokens: 256
 
 # Keys are stored as SHA-256 hashes: python -m switchyard.config hash <key>
 tenants:
   - name: local
     key_sha256: 5cbec0ae7e5d32e771ce65b153958d2da52b3f702fdc2867bae3de9e66b8ea9b # sy-dev-local-key
-    features: [chat, eval, bench]
+    features: [chat, eval, bench, chaos]
 
 admin_key_sha256: 7f9ce6a78a65dd67a21999c968266dc87302d59ece921c36a7bf82373df37ee8 # sy-admin-local-key
 prices_file: prices.yaml # relative to this file
+
+# Health, breaker, retry and failover policy. These are the defaults (spec 7.3 to 7.5);
+# the outage scenarios are judged against them. Redis and Postgres are set by
+# SWITCHYARD_REDIS_URL and SWITCHYARD_DATABASE_URL, read once at startup.
+resilience:
+  bucket_s: 10
+  window_buckets: 6 # 60 s
+  trip_min_requests: 10
+  trip_failure_rate: 0.4
+  trip_consecutive_failures: 5
+  ttft_period_buckets: 3 # 30 s
+  ttft_min_samples: 10
+  probe_interval_s: 10
+  probe_timeout_s: 5
+  probe_successes: 3
+  max_attempts: 3 # every upstream call, retries included
+  retry_budget_ratio: 0.2
+  retry_budget_floor: 3 # retries per model per window allowed regardless of traffic
+  retry_base_s: 0.2
+  retry_cap_s: 2
+  cooldown_default_s: 10 # a 429 without Retry-After
+  auth_cooldown_s: 60 # a 401 or 403 from the provider
+  shared_sync_s: 0.5

@@ -178,7 +178,7 @@ async def main() -> None:
             "--http",
             "httptools",
         ],
-        {"MOCKLLM_URL": f"http://127.0.0.1:{mock_port}", "SWITCHYARD_LOG_LEVEL": "WARNING"},
+        {"MOCKLLM_A_URL": f"http://127.0.0.1:{mock_port}", "SWITCHYARD_LOG_LEVEL": "WARNING"},
     )
     rows = []
     try:

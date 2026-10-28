@@ -7,5 +7,6 @@
 .pytest_cache
 eval/seam/results
 tests
+!tests/fixtures/streams
 bench
 docs

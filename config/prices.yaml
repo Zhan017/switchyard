@@ -31,5 +31,5 @@ models:
       cached_input: 0.003
       output: 0.60
       peak_hours_utc: [[1, 4], [6, 10]] # Monday to Friday
-  mock/mock-a: { input: 0, output: 0 }
-  mock/mock-b: { input: 0, output: 0 }
+  mock-a/mock: { input: 0, output: 0 }
+  mock-b/mock: { input: 0, output: 0 }

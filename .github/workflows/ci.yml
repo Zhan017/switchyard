@@ -8,6 +8,26 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 2s
+          --health-retries 10
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: switchyard
+          POSTGRES_PASSWORD: switchyard
+          POSTGRES_DB: switchyard
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U switchyard" --health-interval 5s --health-timeout 2s
+          --health-retries 10
+    env:
+      SWITCHYARD_TEST_REDIS_URL: redis://localhost:6379/0
+      SWITCHYARD_TEST_DATABASE_URL: postgresql://switchyard:switchyard@localhost:5432/switchyard
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -29,9 +49,9 @@ jobs:
         run: |
           docker network create sy
           docker run -d --name mockllm --network sy switchyard:ci \
-            uvicorn --factory mockllm.app:app_from_env --host 0.0.0.0 --port 8001
+            python -m mockllm --port 8001 --control-port 8101
           docker run -d --name switchyard --network sy -p 8000:8000 \
-            -e MOCKLLM_URL=http://mockllm:8001 switchyard:ci
+            -e MOCKLLM_A_URL=http://mockllm:8001 switchyard:ci
           for i in $(seq 1 30); do curl -sf localhost:8000/healthz && break; sleep 1; done
           curl -sf localhost:8000/v1/chat/completions \
             -H 'authorization: Bearer sy-dev-local-key' -H 'x-switchyard-feature: chat' \

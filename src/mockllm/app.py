@@ -17,23 +17,40 @@ Faults (``mode``), each optionally limited to one ``model`` and a ``duration_s``
 - ``error_event``: send ``data: {"error": ...}`` inside the 200 stream after N tokens
 - ``hang``: accept the request and never answer
 - ``invalid_json``: in JSON mode, cut the answer short so it doesn't parse
+- ``refuse_connections``: refuse TCP connections and reset open ones (gate mode only,
+  see gate.py); applies to the whole server, not one model
+- ``flap``: alternate healthy and down: ``{"period_s": 20, "down": "refuse"}``; ``down``
+  is ``refuse`` (gate mode) or ``error`` (HTTP 503)
+- ``replay``: play back a recorded stream file as it is, optionally cut short:
+  ``{"file": "openai_text.sse", "cut_after_events": 5}``, from ``MOCKLLM_FIXTURES``
+
+Any fault's params may include ``seed``, which reseeds the random choices (for
+``error_rate``), so a scenario run with the same seed injects the same failures.
+
+``GET /stats`` counts requests, and probes separately (``max_tokens`` of 1, which is what
+Switchyard's prober sends), so a scenario can count upstream attempts.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
 import random
 import time
 import uuid
+from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+from mockllm.gate import Gate
 
 WORDS = tuple(
     [
@@ -88,7 +105,11 @@ MODES = {
     "error_event",
     "hang",
     "invalid_json",
+    "refuse_connections",
+    "flap",
+    "replay",
 }
+FIXTURES = Path(os.environ.get("MOCKLLM_FIXTURES", "tests/fixtures/streams"))
 
 
 @dataclass
@@ -111,7 +132,11 @@ class MockState:
     answer_tokens: int = int(os.environ.get("MOCKLLM_ANSWER_TOKENS", "48"))
     faults: list[Fault] = field(default_factory=list)
     requests: int = 0
+    probes: int = 0
+    by_model: Counter[str] = field(default_factory=Counter)
     rng: random.Random = field(default_factory=lambda: random.Random(7))
+    gate: Gate | None = None  # set when served behind a gate (python -m mockllm)
+    flapper: asyncio.Task[None] | None = None
 
     def fault(self, mode: str, model: str) -> dict[str, Any] | None:
         now = time.monotonic()
@@ -142,8 +167,13 @@ def create_mock_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/stats")
-    async def stats() -> dict[str, int]:
-        return {"requests": state.requests}
+    async def stats() -> dict[str, Any]:
+        return {
+            "requests": state.requests,
+            "probes": state.probes,
+            "by_model": dict(state.by_model),
+            "refusing": bool(state.gate and state.gate.refusing),
+        }
 
     @app.post("/chaos", response_model=None)
     async def set_fault(request: Request) -> Response:
@@ -151,23 +181,60 @@ def create_mock_app() -> FastAPI:
         mode = body.get("mode")
         if mode not in MODES:
             return JSONResponse({"error": f"unknown mode {mode!r}"}, status_code=400)
+        params = body.get("params") or {}
         duration = body.get("duration_s")
+        if "seed" in params:
+            state.rng = random.Random(params["seed"])
+        gated = state.gate is not None
+        down = params.get("down", "refuse" if gated else "error")
+        if (mode == "refuse_connections" or (mode == "flap" and down == "refuse")) and not gated:
+            return JSONResponse(
+                {"error": f"{mode} needs gate mode: run python -m mockllm"}, status_code=400
+            )
         until = time.monotonic() + float(duration) if duration else None
-        state.faults.append(Fault(mode, body.get("params") or {}, body.get("model"), until))
+        state.faults.append(Fault(mode, params, body.get("model"), until))
+        if mode == "refuse_connections" and state.gate is not None:
+            state.gate.refuse(float(duration) if duration else None)
+        if mode == "flap" and down == "refuse" and state.gate is not None:
+            _stop_flapping(state)
+            state.flapper = asyncio.create_task(
+                _flap(state.gate, float(params.get("period_s", 20)), until)
+            )
         return JSONResponse({"active": len(state.faults)})
 
     @app.delete("/chaos")
     async def clear_faults() -> dict[str, int]:
         state.faults.clear()
+        _stop_flapping(state)
+        if state.gate is not None and state.gate.refusing:
+            await state.gate.accept()
         return {"active": 0}
+
+    @app.post("/stats/reset")
+    async def reset_stats() -> dict[str, int]:
+        state.requests = state.probes = 0
+        state.by_model.clear()
+        return {"requests": 0}
 
     @app.post("/v1/chat/completions", response_model=None)
     async def chat(request: Request) -> Response:
         state.requests += 1
         body = await request.json()
         model = str(body.get("model") or "mock")
+        state.by_model[model] += 1
+        if (body.get("max_completion_tokens") or body.get("max_tokens")) == 1:
+            state.probes += 1
         messages = body.get("messages") or []
 
+        if (flap := state.fault("flap", model)) is not None:
+            period = float(flap.get("period_s", 20))
+            if flap.get("down", "error") == "error" and int(time.monotonic() // period) % 2:
+                return JSONResponse(
+                    {"error": {"message": "mockllm flapping: down", "type": "server_error"}},
+                    status_code=503,
+                )
+        if (replay := state.fault("replay", model)) is not None:
+            return _replay(replay)
         if (hang := state.fault("hang", model)) is not None:
             await asyncio.sleep(float(hang.get("seconds", 3600)))
         failure = _failure(state, model)
@@ -194,7 +261,11 @@ def create_mock_app() -> FastAPI:
         response_id = f"chatcmpl-mock-{uuid.uuid4().hex[:12]}"
 
         if not body.get("stream"):
-            await asyncio.sleep(ttft_s + delay_s * max(0, len(pieces) - 1))
+            # Generate at the same pace as a stream, one sleep per token, as a real provider
+            # does; otherwise a gateway that reads the answer as a stream looks slower.
+            await asyncio.sleep(ttft_s)
+            for _ in range(len(pieces) - 1):
+                await asyncio.sleep(delay_s)
             message: dict[str, Any] = {"role": "assistant", "content": None}
             if tool_call:
                 message["tool_calls"] = [
@@ -233,6 +304,41 @@ def create_mock_app() -> FastAPI:
         return StreamingResponse(stream, media_type="text/event-stream")
 
     return app
+
+
+def _stop_flapping(state: MockState) -> None:
+    if state.flapper is not None:
+        state.flapper.cancel()
+        state.flapper = None
+
+
+async def _flap(gate: Gate, period_s: float, until: float | None) -> None:
+    """Refuse for one period, accept for the next, until the fault ends."""
+    with contextlib.suppress(asyncio.CancelledError):
+        while until is None or time.monotonic() < until:
+            await asyncio.sleep(period_s)
+            gate.refuse(period_s)
+            await asyncio.sleep(period_s)
+        await gate.accept()
+
+
+def _replay(params: dict[str, Any]) -> Response:
+    """A recorded stream, byte for byte, optionally ending after N events with no [DONE]."""
+    path = (FIXTURES / str(params.get("file", ""))).resolve()
+    if FIXTURES.resolve() not in path.parents or not path.is_file():
+        return JSONResponse({"error": {"message": f"no fixture {path.name}"}}, status_code=500)
+    events = [e for e in path.read_bytes().split(b"\n\n") if e.strip()]
+    cut = params.get("cut_after_events")
+    if cut is not None:
+        events = events[: int(cut)]
+    delay_s = float(params.get("delay_ms", 5)) / 1000
+
+    async def play() -> AsyncIterator[bytes]:
+        for event in events:
+            yield event + b"\n\n"
+            await asyncio.sleep(delay_s)
+
+    return StreamingResponse(play(), media_type="text/event-stream")
 
 
 def _failure(state: MockState, model: str) -> Response | None:
@@ -351,5 +457,5 @@ async def _stream(
 
 
 def app_from_env() -> FastAPI:
-    """Entry point for ``uvicorn --factory mockllm.app:app_from_env``."""
+    """Entry point for ``uvicorn --factory mockllm.app:app_from_env`` (no gate)."""
     return create_mock_app()

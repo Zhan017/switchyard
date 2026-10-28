@@ -11,7 +11,10 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --locked --no-dev --no-install-project
 COPY src ./src
+COPY chaos ./chaos
 COPY config ./config
+# Recorded streams that mockllm's replay fault plays back.
+COPY tests/fixtures/streams ./tests/fixtures/streams
 RUN uv sync --locked --no-dev
 
 RUN useradd --create-home --uid 10001 app
