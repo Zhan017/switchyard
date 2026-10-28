@@ -1,0 +1,262 @@
+{
+  "scenario": {
+    "id": "S1",
+    "title": "The primary returns 500 on half its requests",
+    "release": "v0.1",
+    "description": "For the whole run, the first model in the route answers half its requests with HTTP 500 before sending anything. Retries on the same provider are limited by the retry budget, failover is not, and the breaker should open on the 40% rule and keep traffic away.",
+    "topology": {
+      "gateway": "Switchyard, route group `mock` (mock-a/mock first, then mock-b/mock)",
+      "primary": "mockllm behind a gate, serving mock-a/mock",
+      "secondary": "mockllm behind a gate, serving mock-b/mock"
+    },
+    "traffic": {
+      "model": "mock",
+      "rate_rps": 10.0,
+      "duration_s": 120.0,
+      "stream_share": 0.5,
+      "max_tokens": [
+        16,
+        32,
+        48,
+        64
+      ],
+      "timeout_s": 130.0
+    },
+    "seeds": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "faults": [
+      {
+        "upstream": "primary",
+        "mode": "error_rate",
+        "params": {
+          "rate": 0.5,
+          "status": 500
+        },
+        "model": null,
+        "start_s": 0.0,
+        "duration_s": 120.0
+      }
+    ],
+    "checks": [
+      {
+        "kind": "success_rate",
+        "description": "Requests that completed",
+        "min": 0.99,
+        "max": null,
+        "max_s": null,
+        "model": null,
+        "window": {
+          "from_s": 0.0,
+          "to_s": null
+        }
+      },
+      {
+        "kind": "breaker_opens",
+        "description": "The primary's breaker opens",
+        "min": null,
+        "max": null,
+        "max_s": null,
+        "model": "mock-a/mock",
+        "window": {
+          "from_s": 0.0,
+          "to_s": null
+        }
+      }
+    ]
+  },
+  "verdict": "pass",
+  "invalid": [],
+  "checks": [
+    {
+      "kind": "success_rate",
+      "description": "Requests that completed",
+      "target": "lower bound >= 99%",
+      "window": {
+        "from_s": 0.0,
+        "to_s": null
+      },
+      "measured": "100.00% (6000 of 6000; 95% interval 99.94% to 100.00%)",
+      "interval": {
+        "hits": 6000,
+        "total": 6000,
+        "low": 0.9993601665122168,
+        "high": 0.9999999999999999
+      },
+      "per_seed": [
+        {
+          "seed": 1,
+          "hits": 1200,
+          "total": 1200
+        },
+        {
+          "seed": 2,
+          "hits": 1200,
+          "total": 1200
+        },
+        {
+          "seed": 3,
+          "hits": 1200,
+          "total": 1200
+        },
+        {
+          "seed": 4,
+          "hits": 1200,
+          "total": 1200
+        },
+        {
+          "seed": 5,
+          "hits": 1200,
+          "total": 1200
+        }
+      ],
+      "verdict": "pass"
+    },
+    {
+      "kind": "breaker_opens",
+      "description": "The primary's breaker opens",
+      "target": "opens",
+      "window": {
+        "from_s": 0.0,
+        "to_s": null
+      },
+      "measured": "opened after 1.52 s on the worst seed (polled every 0.25 s)",
+      "per_seed": [
+        {
+          "seed": 1,
+          "s": 0.766
+        },
+        {
+          "seed": 2,
+          "s": 1.02
+        },
+        {
+          "seed": 3,
+          "s": 0.765
+        },
+        {
+          "seed": 4,
+          "s": 0.258
+        },
+        {
+          "seed": 5,
+          "s": 1.521
+        }
+      ],
+      "verdict": "pass"
+    }
+  ],
+  "seeds": [
+    {
+      "seed": 1,
+      "started": 1793192767.7262084,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 12,
+        "secondary": 1195
+      },
+      "upstream_probes": {
+        "primary": 11,
+        "secondary": 0
+      },
+      "fault_errors": [],
+      "requests": 1200,
+      "succeeded": 1200,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 3
+    },
+    {
+      "seed": 2,
+      "started": 1793192889.384274,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 35,
+        "secondary": 1182
+      },
+      "upstream_probes": {
+        "primary": 11,
+        "secondary": 0
+      },
+      "fault_errors": [],
+      "requests": 1200,
+      "succeeded": 1200,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 8
+    },
+    {
+      "seed": 3,
+      "started": 1793193011.0794466,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 26,
+        "secondary": 1186
+      },
+      "upstream_probes": {
+        "primary": 11,
+        "secondary": 0
+      },
+      "fault_errors": [],
+      "requests": 1200,
+      "succeeded": 1200,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 4
+    },
+    {
+      "seed": 4,
+      "started": 1793193132.7537322,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 41,
+        "secondary": 1183
+      },
+      "upstream_probes": {
+        "primary": 11,
+        "secondary": 0
+      },
+      "fault_errors": [],
+      "requests": 1200,
+      "succeeded": 1200,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 12
+    },
+    {
+      "seed": 5,
+      "started": 1793193254.4216716,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 17,
+        "secondary": 1189
+      },
+      "upstream_probes": {
+        "primary": 11,
+        "secondary": 0
+      },
+      "fault_errors": [],
+      "requests": 1200,
+      "succeeded": 1200,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 3
+    }
+  ],
+  "environment": {
+    "date": "2026-10-28 13:16 UTC",
+    "gateway": "http://localhost:8000",
+    "commit": "8de40c0",
+    "host": "Linux x86_64, 2 CPUs",
+    "python": "3.12.3"
+  }
+}

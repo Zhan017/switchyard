@@ -1,0 +1,323 @@
+{
+  "scenario": {
+    "id": "S8-hang",
+    "title": "Every provider hangs for 3 minutes",
+    "release": "v0.1",
+    "description": "After a healthy minute, both models accept requests and never answer, for 3 minutes. Each attempt costs a full first-token timeout (5 s) until the breakers open, so the first requests of the outage wait up to about 15 s. The target applies from 15 s into the outage, once both breakers have had time to open; the first 15 s are reported in the per-seed latency columns. After that, requests should get a 503 within the first-token budget plus 1 s.",
+    "topology": {
+      "gateway": "Switchyard, route group `mock` (mock-a/mock first, then mock-b/mock)",
+      "primary": "mockllm behind a gate, serving mock-a/mock",
+      "secondary": "mockllm behind a gate, serving mock-b/mock"
+    },
+    "traffic": {
+      "model": "mock",
+      "rate_rps": 10.0,
+      "duration_s": 300.0,
+      "stream_share": 0.5,
+      "max_tokens": [
+        16,
+        32,
+        48,
+        64
+      ],
+      "timeout_s": 130.0
+    },
+    "seeds": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "faults": [
+      {
+        "upstream": "primary",
+        "mode": "hang",
+        "params": {},
+        "model": null,
+        "start_s": 60.0,
+        "duration_s": 180.0
+      },
+      {
+        "upstream": "secondary",
+        "mode": "hang",
+        "params": {},
+        "model": null,
+        "start_s": 60.0,
+        "duration_s": 180.0
+      }
+    ],
+    "checks": [
+      {
+        "kind": "fast_failure",
+        "description": "Requests from 15 s into the outage answered with 503",
+        "min": 0.99,
+        "max": null,
+        "max_s": 6.0,
+        "model": null,
+        "window": {
+          "from_s": 75.0,
+          "to_s": 240.0
+        }
+      },
+      {
+        "kind": "attempt_ratio",
+        "description": "Upstream attempts per request over the whole run, probes excluded",
+        "min": null,
+        "max": 1.2,
+        "max_s": null,
+        "model": null,
+        "window": {
+          "from_s": 0.0,
+          "to_s": null
+        }
+      },
+      {
+        "kind": "recovery",
+        "description": "Normal service after the providers recover",
+        "min": null,
+        "max": null,
+        "max_s": 45.0,
+        "model": null,
+        "window": {
+          "from_s": 0.0,
+          "to_s": null
+        }
+      }
+    ]
+  },
+  "verdict": "pass",
+  "invalid": [],
+  "checks": [
+    {
+      "kind": "fast_failure",
+      "description": "Requests from 15 s into the outage answered with 503",
+      "target": "lower bound >= 99% within 6 s",
+      "window": {
+        "from_s": 75.0,
+        "to_s": 240.0
+      },
+      "measured": "100.00% (8250 of 8250; 95% interval 99.95% to 100.00%)",
+      "interval": {
+        "hits": 8250,
+        "total": 8250,
+        "low": 0.9995345853394617,
+        "high": 1.0
+      },
+      "per_seed": [
+        {
+          "seed": 1,
+          "hits": 1650,
+          "total": 1650
+        },
+        {
+          "seed": 2,
+          "hits": 1650,
+          "total": 1650
+        },
+        {
+          "seed": 3,
+          "hits": 1650,
+          "total": 1650
+        },
+        {
+          "seed": 4,
+          "hits": 1650,
+          "total": 1650
+        },
+        {
+          "seed": 5,
+          "hits": 1650,
+          "total": 1650
+        }
+      ],
+      "verdict": "pass"
+    },
+    {
+      "kind": "attempt_ratio",
+      "description": "Upstream attempts per request over the whole run, probes excluded",
+      "target": "<= 1.2x requests",
+      "window": {
+        "from_s": 0.0,
+        "to_s": null
+      },
+      "measured": "0.387x (5812 upstream attempts for 15000 requests)",
+      "ratio": 0.3874666666666667,
+      "per_seed": [
+        {
+          "seed": 1,
+          "ratio": 0.3873333333333333
+        },
+        {
+          "seed": 2,
+          "ratio": 0.3873333333333333
+        },
+        {
+          "seed": 3,
+          "ratio": 0.38766666666666666
+        },
+        {
+          "seed": 4,
+          "ratio": 0.3873333333333333
+        },
+        {
+          "seed": 5,
+          "ratio": 0.38766666666666666
+        }
+      ],
+      "verdict": "pass"
+    },
+    {
+      "kind": "recovery",
+      "description": "Normal service after the providers recover",
+      "target": "within 45 s",
+      "window": {
+        "from_s": 0.0,
+        "to_s": null
+      },
+      "measured": "20.7 s on the worst seed (last failed request after the outage)",
+      "per_seed": [
+        {
+          "seed": 1,
+          "s": 20.700400000000002
+        },
+        {
+          "seed": 2,
+          "s": 20.701900000000023
+        },
+        {
+          "seed": 3,
+          "s": 20.700800000000015
+        },
+        {
+          "seed": 4,
+          "s": 20.70119999999997
+        },
+        {
+          "seed": 5,
+          "s": 20.70060000000001
+        }
+      ],
+      "verdict": "pass"
+    }
+  ],
+  "seeds": [
+    {
+      "seed": 1,
+      "started": 1793196994.7664917,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 1004,
+        "secondary": 158
+      },
+      "upstream_probes": {
+        "primary": 20,
+        "secondary": 19
+      },
+      "fault_errors": [],
+      "requests": 3000,
+      "succeeded": 993,
+      "errors": {
+        "no_healthy_provider": 2007
+      },
+      "failed_latency_p50_s": 0.0019,
+      "failed_latency_max_s": 15.1192,
+      "with_failover": 0
+    },
+    {
+      "seed": 2,
+      "started": 1793197296.6275325,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 1004,
+        "secondary": 158
+      },
+      "upstream_probes": {
+        "primary": 20,
+        "secondary": 19
+      },
+      "fault_errors": [],
+      "requests": 3000,
+      "succeeded": 993,
+      "errors": {
+        "no_healthy_provider": 2007
+      },
+      "failed_latency_p50_s": 0.0018,
+      "failed_latency_max_s": 15.1626,
+      "with_failover": 0
+    },
+    {
+      "seed": 3,
+      "started": 1793197598.4340196,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 1004,
+        "secondary": 159
+      },
+      "upstream_probes": {
+        "primary": 20,
+        "secondary": 19
+      },
+      "fault_errors": [],
+      "requests": 3000,
+      "succeeded": 993,
+      "errors": {
+        "no_healthy_provider": 2007
+      },
+      "failed_latency_p50_s": 0.0019,
+      "failed_latency_max_s": 15.2428,
+      "with_failover": 0
+    },
+    {
+      "seed": 4,
+      "started": 1793197900.2305312,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 1004,
+        "secondary": 158
+      },
+      "upstream_probes": {
+        "primary": 20,
+        "secondary": 19
+      },
+      "fault_errors": [],
+      "requests": 3000,
+      "succeeded": 993,
+      "errors": {
+        "no_healthy_provider": 2007
+      },
+      "failed_latency_p50_s": 0.0018,
+      "failed_latency_max_s": 15.1959,
+      "with_failover": 0
+    },
+    {
+      "seed": 5,
+      "started": 1793198202.0496173,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 1004,
+        "secondary": 159
+      },
+      "upstream_probes": {
+        "primary": 20,
+        "secondary": 19
+      },
+      "fault_errors": [],
+      "requests": 3000,
+      "succeeded": 993,
+      "errors": {
+        "no_healthy_provider": 2007
+      },
+      "failed_latency_p50_s": 0.0018,
+      "failed_latency_max_s": 15.1929,
+      "with_failover": 0
+    }
+  ],
+  "environment": {
+    "date": "2026-10-28 14:41 UTC",
+    "gateway": "http://localhost:8000",
+    "commit": "8de40c0",
+    "host": "Linux x86_64, 2 CPUs",
+    "python": "3.12.3"
+  }
+}

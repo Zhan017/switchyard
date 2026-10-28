@@ -1,0 +1,306 @@
+{
+  "scenario": {
+    "id": "S4",
+    "title": "The primary refuses connections for 5 minutes, then recovers",
+    "release": "v0.1",
+    "description": "After a healthy minute, the first model's server refuses every TCP connection and resets the open ones for 5 minutes, then accepts again. Requests should fail over to the second model, the breaker should open quickly, and probes should close it within the worst case of 35 s after recovery (spec 7.4), plus margin.",
+    "topology": {
+      "gateway": "Switchyard, route group `mock` (mock-a/mock first, then mock-b/mock)",
+      "primary": "mockllm behind a gate, serving mock-a/mock",
+      "secondary": "mockllm behind a gate, serving mock-b/mock"
+    },
+    "traffic": {
+      "model": "mock",
+      "rate_rps": 10.0,
+      "duration_s": 420.0,
+      "stream_share": 0.5,
+      "max_tokens": [
+        16,
+        32,
+        48,
+        64
+      ],
+      "timeout_s": 130.0
+    },
+    "seeds": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "faults": [
+      {
+        "upstream": "primary",
+        "mode": "refuse_connections",
+        "params": {},
+        "model": null,
+        "start_s": 60.0,
+        "duration_s": 300.0
+      }
+    ],
+    "checks": [
+      {
+        "kind": "success_rate",
+        "description": "Requests that completed",
+        "min": 0.99,
+        "max": null,
+        "max_s": null,
+        "model": null,
+        "window": {
+          "from_s": 0.0,
+          "to_s": null
+        }
+      },
+      {
+        "kind": "breaker_opens",
+        "description": "The primary's breaker opens after the outage starts",
+        "min": null,
+        "max": null,
+        "max_s": 10.0,
+        "model": "mock-a/mock",
+        "window": {
+          "from_s": 0.0,
+          "to_s": null
+        }
+      },
+      {
+        "kind": "breaker_closes",
+        "description": "The primary's breaker closes after it recovers",
+        "min": null,
+        "max": null,
+        "max_s": 45.0,
+        "model": "mock-a/mock",
+        "window": {
+          "from_s": 0.0,
+          "to_s": null
+        }
+      }
+    ]
+  },
+  "verdict": "pass",
+  "invalid": [],
+  "checks": [
+    {
+      "kind": "success_rate",
+      "description": "Requests that completed",
+      "target": "lower bound >= 99%",
+      "window": {
+        "from_s": 0.0,
+        "to_s": null
+      },
+      "measured": "100.00% (20999 of 21000; 95% interval 99.97% to 100.00%)",
+      "interval": {
+        "hits": 20999,
+        "total": 21000,
+        "low": 0.9997302921493173,
+        "high": 0.9999915940193557
+      },
+      "per_seed": [
+        {
+          "seed": 1,
+          "hits": 4200,
+          "total": 4200
+        },
+        {
+          "seed": 2,
+          "hits": 4200,
+          "total": 4200
+        },
+        {
+          "seed": 3,
+          "hits": 4199,
+          "total": 4200
+        },
+        {
+          "seed": 4,
+          "hits": 4200,
+          "total": 4200
+        },
+        {
+          "seed": 5,
+          "hits": 4200,
+          "total": 4200
+        }
+      ],
+      "verdict": "pass"
+    },
+    {
+      "kind": "breaker_opens",
+      "description": "The primary's breaker opens after the outage starts",
+      "target": "within 10 s",
+      "window": {
+        "from_s": 0.0,
+        "to_s": null
+      },
+      "measured": "opened after 0.33 s on the worst seed (polled every 0.25 s)",
+      "per_seed": [
+        {
+          "seed": 1,
+          "s": 0.3049999999999997
+        },
+        {
+          "seed": 2,
+          "s": 0.08599999999999852
+        },
+        {
+          "seed": 3,
+          "s": 0.32800000000000296
+        },
+        {
+          "seed": 4,
+          "s": 0.2849999999999966
+        },
+        {
+          "seed": 5,
+          "s": 0.33200000000000074
+        }
+      ],
+      "verdict": "pass"
+    },
+    {
+      "kind": "breaker_closes",
+      "description": "The primary's breaker closes after it recovers",
+      "target": "within 45 s",
+      "window": {
+        "from_s": 0.0,
+        "to_s": null
+      },
+      "measured": "closed after 20.37 s on the worst seed (polled every 0.25 s)",
+      "per_seed": [
+        {
+          "seed": 1,
+          "s": 20.249000000000024
+        },
+        {
+          "seed": 2,
+          "s": 20.307999999999993
+        },
+        {
+          "seed": 3,
+          "s": 20.25200000000001
+        },
+        {
+          "seed": 4,
+          "s": 20.333000000000027
+        },
+        {
+          "seed": 5,
+          "s": 20.37099999999998
+        }
+      ],
+      "verdict": "pass"
+    }
+  ],
+  "seeds": [
+    {
+      "seed": 1,
+      "started": 1793193376.267627,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 999,
+        "secondary": 3203
+      },
+      "upstream_probes": {
+        "primary": 3,
+        "secondary": 0
+      },
+      "fault_errors": [],
+      "requests": 4200,
+      "succeeded": 4200,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 3
+    },
+    {
+      "seed": 2,
+      "started": 1793193798.034917,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 999,
+        "secondary": 3203
+      },
+      "upstream_probes": {
+        "primary": 3,
+        "secondary": 0
+      },
+      "fault_errors": [],
+      "requests": 4200,
+      "succeeded": 4200,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 3
+    },
+    {
+      "seed": 3,
+      "started": 1793194219.6839442,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 999,
+        "secondary": 3203
+      },
+      "upstream_probes": {
+        "primary": 3,
+        "secondary": 0
+      },
+      "fault_errors": [],
+      "requests": 4200,
+      "succeeded": 4199,
+      "errors": {
+        "no_healthy_provider": 1
+      },
+      "failed_latency_p50_s": 0.2045,
+      "failed_latency_max_s": 0.2045,
+      "with_failover": 2
+    },
+    {
+      "seed": 4,
+      "started": 1793194641.5301733,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 998,
+        "secondary": 3203
+      },
+      "upstream_probes": {
+        "primary": 3,
+        "secondary": 0
+      },
+      "fault_errors": [],
+      "requests": 4200,
+      "succeeded": 4200,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 3
+    },
+    {
+      "seed": 5,
+      "started": 1793195063.432893,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 999,
+        "secondary": 3203
+      },
+      "upstream_probes": {
+        "primary": 3,
+        "secondary": 0
+      },
+      "fault_errors": [],
+      "requests": 4200,
+      "succeeded": 4200,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 3
+    }
+  ],
+  "environment": {
+    "date": "2026-10-28 13:51 UTC",
+    "gateway": "http://localhost:8000",
+    "commit": "8de40c0",
+    "host": "Linux x86_64, 2 CPUs",
+    "python": "3.12.3"
+  }
+}
