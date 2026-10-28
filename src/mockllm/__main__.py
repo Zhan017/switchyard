@@ -33,6 +33,8 @@ class GatedMock:
             # providers do. With uvicorn's 5 s default, a pooled connection could be closed
             # just as the gateway reuses it, and show up as a provider failure.
             timeout_keep_alive=60,
+            # A hang fault holds requests for an hour; don't wait for them on shutdown.
+            timeout_graceful_shutdown=1,
         )
         self.server = uvicorn.Server(config)
         self.host = host
