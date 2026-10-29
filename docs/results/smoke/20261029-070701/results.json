@@ -1,0 +1,222 @@
+{
+  "date": "2026-10-29 07:07 UTC",
+  "commit": "960dd2b",
+  "dry_run": false,
+  "models": [
+    "anthropic/claude-haiku-5-5",
+    "openai/gpt-6-luna",
+    "deepseek/deepseek-flash"
+  ],
+  "cost_usd": 0.001622,
+  "checks": [
+    {
+      "model": "anthropic/claude-haiku-5-5",
+      "name": "stream text",
+      "result": "pass",
+      "detail": "28 in, 15 out; '2, 3, 5, 7, 11'",
+      "cost_usd": 0.0000103,
+      "ttft_ms": 843.4,
+      "extra": {}
+    },
+    {
+      "model": "anthropic/claude-haiku-5-5",
+      "name": "unary text",
+      "result": "pass",
+      "detail": "28 in, 15 out; '2, 3, 5, 7, 11'",
+      "cost_usd": 0.0000103,
+      "ttft_ms": null,
+      "extra": {
+        "total_ms": 977.4
+      }
+    },
+    {
+      "model": "anthropic/claude-haiku-5-5",
+      "name": "stream tool call",
+      "result": "pass",
+      "detail": "498 in, 40 out; 'get_weather({\"city\": \"Astana\"})'",
+      "cost_usd": 0.0000698,
+      "ttft_ms": 945.8,
+      "extra": {}
+    },
+    {
+      "model": "anthropic/claude-haiku-5-5",
+      "name": "json",
+      "result": "pass",
+      "detail": "214 in, 12 out; '{\"answer\": \"Astana\"}'",
+      "cost_usd": 0.0000274,
+      "ttft_ms": null,
+      "extra": {
+        "total_ms": 2043.1
+      }
+    },
+    {
+      "model": "anthropic/claude-haiku-5-5",
+      "name": "temperature",
+      "result": "warn",
+      "detail": "14 in, 5 out; 'Hello'; temperature dropped by config (sampling_params: false)",
+      "cost_usd": 3.9e-6,
+      "ttft_ms": null,
+      "extra": {
+        "total_ms": 1475.3
+      }
+    },
+    {
+      "model": "openai/gpt-6-luna",
+      "name": "stream text",
+      "result": "pass",
+      "detail": "20 in, 16 out; '2, 3, 5, 7, 11'",
+      "cost_usd": 0.00001,
+      "ttft_ms": 2350.5,
+      "extra": {}
+    },
+    {
+      "model": "openai/gpt-6-luna",
+      "name": "unary text",
+      "result": "pass",
+      "detail": "20 in, 16 out; '2, 3, 5, 7, 11'",
+      "cost_usd": 0.00001,
+      "ttft_ms": null,
+      "extra": {
+        "total_ms": 1309.8
+      }
+    },
+    {
+      "model": "openai/gpt-6-luna",
+      "name": "stream tool call",
+      "result": "pass",
+      "detail": "135 in, 18 out; 'get_weather({\"city\":\"Astana\"})'",
+      "cost_usd": 0.0000225,
+      "ttft_ms": 939.2,
+      "extra": {}
+    },
+    {
+      "model": "openai/gpt-6-luna",
+      "name": "json",
+      "result": "pass",
+      "detail": "43 in, 12 out; '{\"answer\":\"Astana\"}'",
+      "cost_usd": 0.0000103,
+      "ttft_ms": null,
+      "extra": {
+        "total_ms": 1161.8
+      }
+    },
+    {
+      "model": "openai/gpt-6-luna",
+      "name": "temperature",
+      "result": "pass",
+      "detail": "12 in, 4 out; 'Hello'",
+      "cost_usd": 3.2e-6,
+      "ttft_ms": null,
+      "extra": {
+        "total_ms": 1075.1
+      }
+    },
+    {
+      "model": "deepseek/deepseek-flash",
+      "name": "stream text",
+      "result": "pass",
+      "detail": "18 in, 13 out; '2, 3, 5, 7, 11'",
+      "cost_usd": 0.000021,
+      "ttft_ms": 1230.5,
+      "extra": {}
+    },
+    {
+      "model": "deepseek/deepseek-flash",
+      "name": "unary text",
+      "result": "pass",
+      "detail": "18 in, 13 out; '2, 3, 5, 7, 11'",
+      "cost_usd": 0.000021,
+      "ttft_ms": null,
+      "extra": {
+        "total_ms": 875.0
+      }
+    },
+    {
+      "model": "deepseek/deepseek-flash",
+      "name": "stream tool call",
+      "result": "pass",
+      "detail": "281 in, 34 out; 'get_weather({\"city\": \"Astana\"})'",
+      "cost_usd": 0.0001251,
+      "ttft_ms": 738.2,
+      "extra": {}
+    },
+    {
+      "model": "deepseek/deepseek-flash",
+      "name": "json",
+      "result": "pass",
+      "detail": "45 in, 7 out; '{\"answer\": \"Astana\"}'",
+      "cost_usd": 0.0000219,
+      "ttft_ms": null,
+      "extra": {
+        "total_ms": 933.9
+      }
+    },
+    {
+      "model": "deepseek/deepseek-flash",
+      "name": "temperature",
+      "result": "pass",
+      "detail": "10 in, 2 out; 'Hello!'",
+      "cost_usd": 5.4e-6,
+      "ttft_ms": null,
+      "extra": {
+        "total_ms": 1134.7
+      }
+    },
+    {
+      "model": "chat-fast",
+      "name": "route group",
+      "result": "pass",
+      "detail": "14 in, 5 out; 'Hello'",
+      "cost_usd": 3.9e-6,
+      "ttft_ms": null,
+      "extra": {
+        "total_ms": 940.8
+      }
+    },
+    {
+      "model": "anthropic/claude-haiku-5-5",
+      "name": "breaker probe",
+      "result": "pass",
+      "detail": "one-token probe answered in 706 ms",
+      "cost_usd": 0.0,
+      "ttft_ms": null,
+      "extra": {}
+    },
+    {
+      "model": "openai/gpt-6-luna",
+      "name": "breaker probe",
+      "result": "fail",
+      "detail": "probe outcome client_error: an open breaker on this model could never close",
+      "cost_usd": 0.0,
+      "ttft_ms": null,
+      "extra": {}
+    },
+    {
+      "model": "openai/gpt-6-luna",
+      "name": "prompt cache",
+      "result": "pass",
+      "detail": "first call 2639 in, 2636 written to cache; second call 2636 read from cache",
+      "cost_usd": 0.00036046,
+      "ttft_ms": null,
+      "extra": {}
+    },
+    {
+      "model": "deepseek/deepseek-flash",
+      "name": "breaker probe",
+      "result": "pass",
+      "detail": "one-token probe answered in 1166 ms",
+      "cost_usd": 0.0,
+      "ttft_ms": null,
+      "extra": {}
+    },
+    {
+      "model": "deepseek/deepseek-flash",
+      "name": "prompt cache",
+      "result": "pass",
+      "detail": "first call 2727 in, 0 written to cache; second call 2560 read from cache",
+      "cost_usd": 0.0008859600000000001,
+      "ttft_ms": null,
+      "extra": {}
+    }
+  ]
+}
