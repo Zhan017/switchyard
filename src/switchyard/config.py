@@ -49,6 +49,8 @@ class ModelConfig(_Strict):
     # The newest Claude models reject temperature and top_p; the adapter drops them.
     sampling_params: bool = True
     continuation: Literal["native", "instructed", "none"] = "instructed"
+    # Output tokens an open breaker's probe asks for. GPT-6 Luna rejects fewer than 3.
+    probe_max_tokens: int = Field(default=1, gt=0)
     # Merged into every request body for this model, for example to turn thinking off.
     request_overrides: dict[str, Any] = Field(default_factory=dict)
 

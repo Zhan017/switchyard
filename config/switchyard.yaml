@@ -30,6 +30,7 @@ models:
     request_overrides:
       thinking: { type: disabled } # on by default; v1 has no reasoning models
   openai/gpt-6-luna:
+    probe_max_tokens: 16 # rejects fewer than 3 output tokens; 8 or more ends with stop
     request_overrides:
       reasoning_effort: none
   deepseek/deepseek-flash:

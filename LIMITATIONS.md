@@ -23,7 +23,7 @@ What Switchyard does not do, or does only partly, as of week 3. Each item says w
 - **DeepSeek's off-peak discount ignores Chinese public holidays,** so costs on those days are overstated.
 - **Attempts that fail before the first token are recorded with zero tokens,** since providers generally don't bill them. A failure mid-answer counts the tokens received, estimated if the provider never reported them.
 - **Request records are best effort.** Rows are written to Postgres in batches by a background task. If Postgres is slow or down, queued rows are dropped and counted (`switchyard_records_dropped_total`); Prometheus and the log line still have every request. Rows are kept 30 days.
-- **Probes cost a little.** An open breaker is probed every 10 s with a one-token request, about six a minute per open model, recorded with cost class `probe`.
+- **Probes cost a little.** An open breaker is probed every 10 s with a request for one output token (16 on GPT-6 Luna, which rejects fewer than 3), about six a minute per open model, recorded with cost class `probe`.
 
 ## Security
 
@@ -32,7 +32,7 @@ What Switchyard does not do, or does only partly, as of week 3. Each item says w
 ## Testing and measurement
 
 - **The gateway hasn't been run against the real provider APIs yet.** Its adapters are tested against stream fixtures written from the providers' documentation, and every scenario runs on mockllm. Only the week 1 seam test, which uses its own clients, has called the real APIs. The first real run is the first task in week 4.
-- **Provider stream fixtures are written from the providers' documentation,** not recorded. `scripts/record_stream.py` records real streams; recorded fixtures will be added next to the written ones.
+- **The adapter contract tests run on stream fixtures written from the providers' documentation.** Real streams from all three providers were recorded on 2026-10-29 (`tests/fixtures/streams/recorded/`); so far only the probe test replays one.
 - **Gateway overhead is measured on shared machines,** with mockllm and the load generator competing for the same CPUs: GitHub's 4-vCPU runners (which vary in CPU from run to run) and a 2-vCPU sandbox. Treat the numbers as upper bounds; see `docs/results/`.
 - **Past saturation the week 3 code degrades faster than week 2's** (streaming at 450 requests a second: 509 ms at p95 against 98 ms on the same runner). The cause hasn't been profiled.
 - **Against another gateway, attempts during a refused-connection outage are undercounted.** The scenario CLI counts attempts at the gateway when it is Switchyard, and otherwise at the mock servers, which can't see a connection they refused. The report says which count it used.

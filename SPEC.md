@@ -1,6 +1,6 @@
 # Switchyard: spec
 
-Status: v2.2, week 3 done · Owner: Zhan Kuatuly · Last updated: 2026-10-28 · Changes from v1 are listed in section 21.
+Status: v2.2, week 3 done · Owner: Zhan Kuatuly · Last updated: 2026-10-29 · Changes from v1 are listed in section 21.
 
 ## 1. Summary
 
@@ -285,7 +285,7 @@ stateDiagram-v2
   - in the last 60 s, at least 10 requests and at least 40% of them failed with retryable errors (below S1's 50% error rate, so S1 trips reliably);
   - 5 retryable failures in a row (so low real traffic can still trip it);
   - p95 time to first token above its budget in two consecutive, non-overlapping 30-second periods, each with at least 10 samples. Periods are aligned to multiples of 30 s and only whole periods count. The budget is the route's first-token timeout, so a sample over budget is a first-token timeout, and the rule reads: more than 5% of attempts timed out before the first token in each of two periods.
-- **While open,** no user traffic goes to the provider. The prober sends a tiny request (`max_tokens: 1`) every 10 s, with a 5 s timeout. Three successful probes in a row close the breaker. There is no doubling backoff.
+- **While open,** no user traffic goes to the provider. The prober sends a tiny request (`max_tokens: 1`, or the model's `probe_max_tokens`: GPT-6 Luna rejects fewer than 3 and is probed with 16) every 10 s, with a 5 s timeout. Three successful probes in a row close the breaker. There is no doubling backoff.
 - **Worst-case recovery,** from the moment the provider is healthy again:
 
   ```
@@ -657,6 +657,11 @@ Decisions, 2026-10-29:
 - Week 4 starts with the gateway's first run against the real APIs and with recorded real streams, before any mid-stream code. Until then every gateway test runs against mocks or hand-written fixtures; only the week 1 seam test, which has its own clients, has called the real APIs.
 - OpenAI cache-write tokens are now counted (`prompt_tokens_details.cache_write_tokens`, billed at 1.25 times the input rate on GPT-5.6 and later).
 - Overhead is measured on GitHub's 4-vCPU runners for public repositories (`.github/workflows/bench.yml`), the machine size section 13 names, with a baseline commit measured right after on the same runner.
+
+First real-API run, 2026-10-29:
+
+- The smoke test ([report](docs/results/smoke/20261029-070701/report.md)) passed 19 of 21 checks on the three real models, with one warning (Haiku's temperature is dropped by config, as intended) and one failure: GPT-6 Luna answers a request for 1 or 2 output tokens with a 400, so the breaker's one-token probe could never close an open breaker on it. Models now have `probe_max_tokens` (default 1, so mockllm still tells probes apart); Luna's is 16.
+- Real streams for text and parallel tool calls are recorded from all three providers under `tests/fixtures/streams/recorded/`.
 
 ## References
 

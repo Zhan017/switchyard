@@ -1,7 +1,8 @@
 """Active probes for open breakers (spec 7.4).
 
 While a breaker is open no user traffic reaches the model. Instead a tiny request
-(``max_tokens: 1``) goes out every ``probe_interval_s`` on a fixed schedule counted from
+(``max_tokens: 1``, or the model's ``probe_max_tokens``) goes out every
+``probe_interval_s`` on a fixed schedule counted from
 when the breaker opened, each with a ``probe_timeout_s`` limit. Three successes in a row
 close the breaker. The schedule doesn't drift with probe duration, which is what makes the
 worst case ``P + (k - 1) * P + t_probe`` hold.
@@ -26,7 +27,7 @@ from switchyard.resilience.shared import SharedState
 
 log = logging.getLogger("switchyard.prober")
 
-PROBE_REQUEST = ChatRequest(messages=(Message("user", "ping"),), max_tokens=1)
+PROBE_MESSAGES = (Message("user", "ping"),)
 PROBE_TENANT = "switchyard"
 PROBE_FEATURE = "probe"
 
@@ -110,10 +111,12 @@ class Prober:
             return "unknown_model"
         provider, model = settings.provider_of(key)
         adapter = state.adapters[provider]
+        options = settings.models[key]
+        request = ChatRequest(messages=PROBE_MESSAGES, max_tokens=options.probe_max_tokens)
         timeout = self.breakers.policy.probe_timeout_s
         timing = StreamTiming()
         events = watch(
-            adapter.stream(model, settings.models[key], PROBE_REQUEST),
+            adapter.stream(model, options, request),
             ttft_s=timeout,
             stall_s=timeout,
             deadline=time.monotonic() + timeout,
@@ -135,7 +138,7 @@ class Prober:
             outcome = error.kind.value
         if outcome == "ok" and not finished:
             outcome = "connection"
-        usage = complete_usage(reported, PROBE_REQUEST, text) if outcome == "ok" else Usage()
+        usage = complete_usage(reported, request, text) if outcome == "ok" else Usage()
         cost = state.prices.cost(key, usage) or 0.0
         estimated = "true" if usage.estimated else "false"
         labels = (PROBE_TENANT, PROBE_FEATURE, provider, model)

@@ -3,7 +3,7 @@
 Starts the gateway on a free local port with config/switchyard.yaml and the keys in .env,
 then sends each model in the chat-fast route group a small set of requests through it:
 streamed and non-streamed text, a streamed tool call, JSON in the mode the model supports,
-a request with a temperature, and the exact one-token probe the breaker uses to recover.
+a request with a temperature, and the exact probe the breaker uses to recover.
 It also checks prompt caching on OpenAI and DeepSeek, as information only, and one
 request to the chat-fast route itself.
 
@@ -183,7 +183,8 @@ def estimate_cost(settings: Settings, prices: PriceTable, models: list[str]) -> 
             text = " ".join(str(m["content"]) for m in body["messages"])
             usage = Usage(estimate_tokens(text) + 50, int(body["max_tokens"]))
             total += prices.cost(model, usage) or 0.0
-        total += prices.cost(model, Usage(10, 1)) or 0.0  # the probe
+        probe = Usage(10, settings.models[model].probe_max_tokens)
+        total += prices.cost(model, probe) or 0.0
         if settings.provider_of(model)[0] in CACHE_PROVIDERS:
             total += 2 * (prices.cost(model, Usage(estimate_tokens(run_prompt) + 50, 5)) or 0.0)
     total += prices.cost(models[0], Usage(60, 60)) or 0.0  # the route check
@@ -422,7 +423,7 @@ async def probe_check(state: GatewayState, model: str) -> Check:
     outcome = await prober.probe_once(model)
     took = (time.perf_counter() - started) * 1000
     if outcome == "ok":
-        return Check(model, "breaker probe", "pass", f"one-token probe answered in {took:.0f} ms")
+        return Check(model, "breaker probe", "pass", f"probe answered in {took:.0f} ms")
     return Check(
         model,
         "breaker probe",
@@ -535,7 +536,7 @@ def report(checks: list[Check], meta: dict[str, Any]) -> str:
         f"Cost ${meta['cost_usd']:.4f}{cost_note}.",
         "",
         f"The gateway ran locally with `config/switchyard.yaml`, {where}. Each model was called "
-        "by name, so a failure shows instead of failing over. `breaker probe` is the one-token "
+        "by name, so a failure shows instead of failing over. `breaker probe` is the tiny "
         "request an open breaker sends to recover; `prompt cache` calls the adapter directly "
         "with the same long prompt twice.",
         "",

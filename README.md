@@ -61,7 +61,7 @@ uv run switchyard-chaos run chaos/scenarios/s4.yaml
 - `POST /v1/chat/completions` in OpenAI's format: streaming and not, tools, JSON mode and JSON schemas, translated to each provider's API.
 - Tenants with hashed keys and a feature header for cost attribution; cost per tenant, feature and model in Prometheus, using each provider's price table, including Claude's long-context tier and DeepSeek's off-peak discount.
 - Time limits on the first token, on stalls and on the whole request, for streamed and non-streamed requests alike ([decision 5](docs/decisions/0005-read-every-answer-as-a-stream.md)).
-- Circuit breakers per provider and model: trip on 40% failures over 60 s, 5 failures in a row, or slow first tokens; recover through one-token probes every 10 s, at most 35 s after the provider is healthy. A 429 is a cooldown, not a failure.
+- Circuit breakers per provider and model: trip on 40% failures over 60 s, 5 failures in a row, or slow first tokens; recover through tiny probes every 10 s, at most 35 s after the provider is healthy. A 429 is a cooldown, not a failure.
 - Retries on the same provider only before the first token, at most once, within a 20% retry budget; failover down the route, at most 3 attempts. Refusals and content filters are never failed over.
 - Breakers and health shared between replicas through Redis with no Redis call on the request path, failing open to local state when Redis is down ([decision 6](docs/decisions/0006-no-redis-on-the-request-path.md)). Request and attempt records in Postgres, batched so they never block a request.
 - Provider failures before anything reached the client become a failover, or a proper HTTP error if nothing is left; after that, a clean error event the OpenAI SDKs raise.
