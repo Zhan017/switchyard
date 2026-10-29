@@ -79,6 +79,7 @@ uv run pytest                        # unit, contract and end-to-end tests
 uv run python -m bench.overhead      # gateway overhead against mockllm
 uv run switchyard-chaos run chaos/scenarios/s1.yaml   # needs compose (or the same stack) running
 uv run python -m eval.seam.spike --dry-run   # the week 1 seam test, offline
+uv run python scripts/smoke_real.py --dry-run  # the real-API smoke test, against mockllm
 ```
 
 The end-to-end tests run a real mockllm server with the gateway in front of it, including the official OpenAI SDK as the client. The provider contract tests run each adapter against stream fixtures written from the providers' documentation; `scripts/record_stream.py` records real ones.

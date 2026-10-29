@@ -39,6 +39,8 @@ jobs:
         run: uv run pytest
       - name: Seam test, dry run
         run: uv run python -m eval.seam.spike --dry-run --limit 3 --out "$RUNNER_TEMP/seam-dry"
+      - name: Real-API smoke test, dry run
+        run: uv run python scripts/smoke_real.py --dry-run --out "$RUNNER_TEMP/smoke-dry"
 
   image:
     runs-on: ubuntu-latest

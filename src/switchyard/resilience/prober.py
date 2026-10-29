@@ -91,7 +91,7 @@ class Prober:
         try:
             if self.shared is not None and not await self.shared.claim_probe(key):
                 return  # another replica probes this model this round
-            ok = await self.probe_once(key)
+            ok = await self.probe_once(key) == "ok"
             if self.shared is not None:
                 await self.shared.report_probe(key, ok)
             else:
@@ -101,11 +101,13 @@ class Prober:
         finally:
             self.running.pop(key, None)
 
-    async def probe_once(self, key: str) -> bool:
+    async def probe_once(self, key: str) -> str:
+        """Send one probe and return its outcome: "ok", or an error kind such as
+        "client_error" (the provider rejected the probe itself) or "timeout"."""
         state = self.state()
         settings = state.settings
         if key not in settings.models:
-            return False
+            return "unknown_model"
         provider, model = settings.provider_of(key)
         adapter = state.adapters[provider]
         timeout = self.breakers.policy.probe_timeout_s
@@ -142,4 +144,4 @@ class Prober:
         self.metrics.tokens.labels(*labels, "output", estimated).inc(usage.output_tokens)
         self.metrics.cost.labels(*labels, "probe", estimated).inc(cost)
         log.info("probe %s: %s", key, outcome)
-        return outcome == "ok"
+        return outcome

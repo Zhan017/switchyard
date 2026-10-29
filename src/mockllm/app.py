@@ -360,6 +360,13 @@ def _failure(state: MockState, model: str) -> Response | None:
     )
 
 
+def _argument_names(tool: dict[str, Any]) -> list[str]:
+    """The tool's required parameters, else all of them, else "query"."""
+    parameters = tool["function"].get("parameters") or {}
+    names = parameters.get("required") or list((parameters.get("properties") or {}).keys())
+    return [str(n) for n in names] or ["query"]
+
+
 def _content(
     body: dict[str, Any], prompt: str, count: int, broken_json: bool = False
 ) -> tuple[list[str], dict[str, str] | None]:
@@ -372,7 +379,8 @@ def _content(
         name = tools[0]["function"]["name"]
         if isinstance(choice, dict):
             name = choice.get("function", {}).get("name", name)
-        arguments = json.dumps({"query": " ".join(words[:6])})
+        tool = next((t for t in tools if t["function"]["name"] == name), tools[0])
+        arguments = json.dumps({key: " ".join(words[:6]) for key in _argument_names(tool)})
         pieces = [arguments[i : i + 8] for i in range(0, len(arguments), 8)]
         return pieces, {"id": f"call_{uuid.uuid4().hex[:10]}", "name": name}
     fmt = (body.get("response_format") or {}).get("type")
