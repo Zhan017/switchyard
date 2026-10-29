@@ -31,8 +31,8 @@ What Switchyard does not do, or does only partly, as of week 3. Each item says w
 
 ## Testing and measurement
 
-- **The gateway hasn't been run against the real provider APIs yet.** Its adapters are tested against stream fixtures written from the providers' documentation, and every scenario runs on mockllm. Only the week 1 seam test, which uses its own clients, has called the real APIs. The first real run is the first task in week 4.
-- **The adapter contract tests run on stream fixtures written from the providers' documentation.** Real streams from all three providers were recorded on 2026-10-29 (`tests/fixtures/streams/recorded/`); so far only the probe test replays one.
+- **The gateway has met the real APIs only in a smoke test:** one request per check for each of the three models (text, tools, JSON, a temperature and the breaker's probe), all passing on 2026-10-29, OpenAI's after a probe fix ([first run](docs/results/smoke/20261029-070701/report.md), [rerun](docs/results/smoke/20261029-105741/report.md)). Load, failures and the outage scenarios run on mockllm.
+- **Recorded real streams cover the happy path only.** Text and parallel tool-call streams from all three providers, recorded on 2026-10-29, are replayed through the adapters in the contract tests. Error events, refusals and cut streams are tested on fixtures written from the providers' documentation.
 - **Gateway overhead is measured on shared machines,** with mockllm and the load generator competing for the same CPUs: GitHub's 4-vCPU runners (which vary in CPU from run to run) and a 2-vCPU sandbox. Treat the numbers as upper bounds; see `docs/results/`.
 - **Past saturation the week 3 code degrades faster than week 2's** (streaming at 450 requests a second: 509 ms at p95 against 98 ms on the same runner). The cause hasn't been profiled.
 - **Against another gateway, attempts during a refused-connection outage are undercounted.** The scenario CLI counts attempts at the gateway when it is Switchyard, and otherwise at the mock servers, which can't see a connection they refused. The report says which count it used.

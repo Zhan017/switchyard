@@ -555,7 +555,7 @@ Planned in hours, at 10 to 12 hours a week.
 | 1 | 10 to 12 | Seam test | Done 2026-10-23: [report](eval/seam/results/20261023-050151/report.md) with joins and a go note. The overhead stub moved to week 2 |
 | 2 | 10 to 12 | Proxy | Done 2026-10-28: OpenAI, Anthropic and DeepSeek adapters, streaming and non-streaming, tools and JSON; `mockllm` with faults; tenants and features; cost with estimated usage; `/metrics`; first-token, stall and deadline limits; overhead measured; Docker image and compose file; CI green |
 | 3 | 10 to 12 | Resilience | Done 2026-10-28: health, breakers with probes, retries, failover, Redis shared state and Postgres records; S1, S4 and S8 pass on mocks, 5 seeds each ([results](docs/results/scenarios-2026-10-28.md)) |
-| 4 | 10 to 12 | Mid-stream | First, before mid-stream code: the gateway's first run against the real APIs (streaming, non-streaming, tools, JSON and a probe on each of the three models) and recorded real streams for the contract tests and S5b and S6b. Then strategies, seam repair, tool-call rules, heartbeats; S5 and S6 pass on mocks; the first seam evaluation on real providers, on fresh prompts and including A |
+| 4 | 10 to 12 | Mid-stream | First, before mid-stream code: the gateway's first run against the real APIs (streaming, non-streaming, tools, JSON and a probe on each of the three models) and recorded real streams for the contract tests and S5b and S6b (done 2026-10-29: [smoke test](docs/results/smoke/20261029-070701/report.md), which found and fixed GPT-6 Luna's probe). Then strategies, seam repair, tool-call rules, heartbeats; S5 and S6 pass on mocks; the first seam evaluation on real providers, on fresh prompts and including A |
 | 5 | 10 to 12 | v0.1 release | LiteLLM baseline with two configs and both endpoints; results tables; README, diagram, video, LIMITATIONS; tag v0.1 |
 
 v0.1 is about 50 to 60 hours. v1 (S2, S7, S10, the full 200-prompt evaluation with hand labels) adds about 20 to 30 hours. Stretch work comes after that, in the cut order from section 4.
@@ -661,7 +661,8 @@ Decisions, 2026-10-29:
 First real-API run, 2026-10-29:
 
 - The smoke test ([report](docs/results/smoke/20261029-070701/report.md)) passed 19 of 21 checks on the three real models, with one warning (Haiku's temperature is dropped by config, as intended) and one failure: GPT-6 Luna answers a request for 1 or 2 output tokens with a 400, so the breaker's one-token probe could never close an open breaker on it. Models now have `probe_max_tokens` (default 1, so mockllm still tells probes apart); Luna's is 16. A rerun on OpenAI after the fix passed all 7 checks ([report](docs/results/smoke/20261029-105741/report.md)).
-- Real streams for text and parallel tool calls are recorded from all three providers under `tests/fixtures/streams/recorded/`.
+- Real streams for text and parallel tool calls are recorded from all three providers under `tests/fixtures/streams/recorded/`, and the contract tests replay all six through the adapters (`tests/contract/test_recorded.py`). They show fields the documentation doesn't: Anthropic's `stop_details` and whitespace padding inside events, OpenAI's `obfuscation`, and DeepSeek's usage arriving on the finish chunk.
+- Prompt caching works as the cost code assumes: on OpenAI the first call wrote 2,636 tokens to the cache and the second read them; on DeepSeek the second call read 2,560.
 
 ## References
 
