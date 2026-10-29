@@ -660,7 +660,7 @@ Decisions, 2026-10-29:
 
 First real-API run, 2026-10-29:
 
-- The smoke test ([report](docs/results/smoke/20261029-070701/report.md)) passed 19 of 21 checks on the three real models, with one warning (Haiku's temperature is dropped by config, as intended) and one failure: GPT-6 Luna answers a request for 1 or 2 output tokens with a 400, so the breaker's one-token probe could never close an open breaker on it. Models now have `probe_max_tokens` (default 1, so mockllm still tells probes apart); Luna's is 16.
+- The smoke test ([report](docs/results/smoke/20261029-070701/report.md)) passed 19 of 21 checks on the three real models, with one warning (Haiku's temperature is dropped by config, as intended) and one failure: GPT-6 Luna answers a request for 1 or 2 output tokens with a 400, so the breaker's one-token probe could never close an open breaker on it. Models now have `probe_max_tokens` (default 1, so mockllm still tells probes apart); Luna's is 16. A rerun on OpenAI after the fix passed all 7 checks ([report](docs/results/smoke/20261029-105741/report.md)).
 - Real streams for text and parallel tool calls are recorded from all three providers under `tests/fixtures/streams/recorded/`.
 
 ## References
