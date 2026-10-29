@@ -1,6 +1,6 @@
 # Gateway overhead after week 3, 2026-10-28
 
-Week 3 put every request through the attempt runner (retries, failover, health recording) and reads non-streaming answers from the provider as a stream ([decision 5](../decisions/0005-read-every-answer-as-a-stream.md)). This measures what that costs.
+Week 3 put every request through the attempt runner (retries, failover, health recording) and reads non-streaming answers from the provider as a stream ([decision 5](../decisions/0005-read-every-answer-as-a-stream.md)). This measures what that costs on a shared 2-vCPU machine. The same comparison on a 4-vCPU GitHub runner, the size the targets name, is in [overhead-2026-10-29-4vcpu.md](overhead-2026-10-29-4vcpu.md).
 
 Machine: 2 vCPU, Linux x86_64, Python 3.12.3, shared: mockllm, the gateway and the load generator all ran on it and competed for CPU. Same method as the [week 2 results](overhead-2026-10-28.md): `uv run python -m bench.overhead --rates 100 200 300 --seconds 15`, open-loop load from a raw-socket client, mockllm with a fixed 50 ms to first token and 32 tokens. Overhead is the gateway's percentile minus the direct percentile: time to first content byte when streaming, total time otherwise. No Redis or Postgres configured.
 

@@ -31,7 +31,9 @@ What Switchyard does not do, or does only partly, as of week 3. Each item says w
 
 ## Testing and measurement
 
+- **The gateway hasn't been run against the real provider APIs yet.** Its adapters are tested against stream fixtures written from the providers' documentation, and every scenario runs on mockllm. Only the week 1 seam test, which uses its own clients, has called the real APIs. The first real run is the first task in week 4.
 - **Provider stream fixtures are written from the providers' documentation,** not recorded. `scripts/record_stream.py` records real streams; recorded fixtures will be added next to the written ones.
-- **Gateway overhead was measured on a shared 2-vCPU machine,** with mockllm and the load generator on the same machine. Treat the numbers as an upper bound; see `docs/results/`. After week 3, non-streaming overhead at 200 requests a second (p95 22 ms) is over the 10 ms target on that machine; it hasn't been measured on the 4-vCPU container the target names.
+- **Gateway overhead is measured on shared machines,** with mockllm and the load generator competing for the same CPUs: GitHub's 4-vCPU runners (which vary in CPU from run to run) and a 2-vCPU sandbox. Treat the numbers as upper bounds; see `docs/results/`.
+- **Past saturation the week 3 code degrades faster than week 2's** (streaming at 450 requests a second: 509 ms at p95 against 98 ms on the same runner). The cause hasn't been profiled.
 - **Against another gateway, attempts during a refused-connection outage are undercounted.** The scenario CLI counts attempts at the gateway when it is Switchyard, and otherwise at the mock servers, which can't see a connection they refused. The report says which count it used.
 - **Outage scenarios run against mockllm,** not real providers. `refuse_connections` is a real refused TCP connection (mockllm's gate), but real providers fail in ways a mock doesn't imitate.

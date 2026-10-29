@@ -480,7 +480,7 @@ Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, 
 - **Strategies:** R, N where supported, I, I+S and A, on the same cuts.
 - **Primary metric:** per item, a judge sees the uninterrupted reference and the stitched answer in both orders and answers "which one was interrupted and resumed?" The item is seamless if the judge is wrong, or inconsistent across the two orders. Report the seamless rate with a 95% interval.
 - **Seam-local view:** the same question on 300 characters either side of the join, so length and style differences elsewhere don't give the answer away.
-- **Judges:** one OpenAI, one Anthropic and one DeepSeek model; every item is judged by all three. The headline number for each pair comes only from judges outside both of its families (for Claude to GPT, that's the DeepSeek judge), so every pair has a neutral score. Also report each judge's rate, their agreement, and self-preference: each judge's seamless rate on continuations from its own family against the others.
+- **Judges:** one OpenAI, one Anthropic and one DeepSeek model; every item is judged by all three. The headline number for each pair comes only from judges outside both of its families (for Claude to GPT, that's the DeepSeek judge), so every pair has a neutral score. Also report each judge's rate, their agreement, and self-preference: each judge's seamless rate on continuations from its own family against the others. A fourth judge is added only under the rule in section 20.
 - **Human check:** hand-label 50 items. Publish judge numbers only if a judge's Cohen's kappa against the hand labels is at least 0.6.
 - **Secondary metrics:** a 1 to 5 coherence score; automatic checks for repeated text, preface leaks and length against the reference.
 - **Cost:** extra input and output tokens per failover, by strategy.
@@ -493,6 +493,7 @@ Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, 
 - Measure this early in week 2, on the first working proxy, so a miss changes the design early instead of the README late.
 - Report the maximum requests per second before overhead p95 passes 25 ms.
 - **Week 2 result** ([report](docs/results/overhead-2026-10-28.md)), on a shared 2-vCPU machine with mockllm and the load generator on it too, 32-token answers: at 200 streamed requests a second, 1.7 ms at p50 and 2.6 ms at p95 added to time to first token; non-streaming, 1.0 ms and 1.1 ms. p95 passes 25 ms at about 300 a second. The first version, on httpx, collapsed between 150 and 200 a second, which led to decision 4.
+- **Week 3 result, on a 4-vCPU GitHub runner** ([report](docs/results/overhead-2026-10-29-4vcpu.md)), mockllm and the load generator on the same runner: at 200 requests a second, 0.96 ms at p95 added to time to first token when streaming and 4.76 ms when not. Both targets are met. p95 passes 25 ms between 350 and 400 requests a second when streaming, and between 450 and 500 when not. Non-streaming costs about 3 ms more than in week 2 because answers are read as streams (decision 5), and past saturation the week 3 code degrades faster than week 2's.
 - Be upfront in the README: Go gateways claim microsecond overhead. Switchyard targets milliseconds and competes on behavior under failure.
 
 ## 14. Testing
@@ -554,7 +555,7 @@ Planned in hours, at 10 to 12 hours a week.
 | 1 | 10 to 12 | Seam test | Done 2026-10-23: [report](eval/seam/results/20261023-050151/report.md) with joins and a go note. The overhead stub moved to week 2 |
 | 2 | 10 to 12 | Proxy | Done 2026-10-28: OpenAI, Anthropic and DeepSeek adapters, streaming and non-streaming, tools and JSON; `mockllm` with faults; tenants and features; cost with estimated usage; `/metrics`; first-token, stall and deadline limits; overhead measured; Docker image and compose file; CI green |
 | 3 | 10 to 12 | Resilience | Done 2026-10-28: health, breakers with probes, retries, failover, Redis shared state and Postgres records; S1, S4 and S8 pass on mocks, 5 seeds each ([results](docs/results/scenarios-2026-10-28.md)) |
-| 4 | 10 to 12 | Mid-stream | Strategies, seam repair, tool-call rules, heartbeats; S5 and S6 pass on mocks; the first seam evaluation on real providers, on fresh prompts and including A |
+| 4 | 10 to 12 | Mid-stream | First, before mid-stream code: the gateway's first run against the real APIs (streaming, non-streaming, tools, JSON and a probe on each of the three models) and recorded real streams for the contract tests and S5b and S6b. Then strategies, seam repair, tool-call rules, heartbeats; S5 and S6 pass on mocks; the first seam evaluation on real providers, on fresh prompts and including A |
 | 5 | 10 to 12 | v0.1 release | LiteLLM baseline with two configs and both endpoints; results tables; README, diagram, video, LIMITATIONS; tag v0.1 |
 
 v0.1 is about 50 to 60 hours. v1 (S2, S7, S10, the full 200-prompt evaluation with hand labels) adds about 20 to 30 hours. Stretch work comes after that, in the cut order from section 4.
@@ -593,9 +594,11 @@ In cut order, first to drop at the top: hedged requests (with a delay from a lon
 
 ## 20. Open questions
 
-- The exact models for each route group, chosen at build time.
-- The exact LiteLLM version, chosen at build time.
-- Whether to add Qwen through DeepInfra as a fourth judge, only if the three judges disagree too much.
+None open. Decided on 2026-10-29, before any of them could be influenced by results:
+
+- **Route group models.** `chat-fast` is Claude Haiku 5.5, GPT-6 Luna and DeepSeek Flash, in that order, with thinking off: the cheapest current model of each family, chosen in week 1. Later projects add their own route groups when they arrive.
+- **LiteLLM version.** The newest release, not a release candidate, on the day the week 5 baseline is set up, pinned by image digest and recorded in the report. On 2026-10-29 that is v1.106.5, released 2026-10-27. Its chat-completions behavior after content has streamed (re-raise, not resume) is checked on the pinned version before the runs. The version doesn't change after results are seen; if a LiteLLM bug spoils a run, both runs are published with the reason.
+- **A fourth judge.** Qwen through DeepInfra is added only if one of the three judges fails the kappa gate (below 0.6 against the 50 hand labels). Each judge is the only neutral judge for at least one pair (DeepSeek for Claude to GPT and GPT to Claude, OpenAI for Claude to DeepSeek, Anthropic for GPT to DeepSeek), so a failed judge leaves a pair without a neutral score. Qwen is outside all three families, so it is neutral for every pair, and it must pass the same gate. If it doesn't, the pair is published without a neutral score and says so. Disagreement between the judges is not a trigger by itself: it is expected from self-preference, and it is reported.
 
 ## 21. Changes from v1
 
@@ -646,6 +649,14 @@ Week 3, 2026-10-28:
 - mockllm runs as two servers behind TCP gates, so `refuse_connections` is a real refused connection. `flap` and `replay` added.
 - Results: S1, S4, S8-refuse and S8-hang all pass with 5 seeds ([results](docs/results/scenarios-2026-10-28.md)). The one S4 miss is a stream cut mid-answer, left for week 4.
 - Scenario attempts are counted at the gateway when it is Switchyard: a mock can't count a connection it refused. Against another gateway the mock-side count is used and the report says so.
+
+Decisions, 2026-10-29:
+
+- Decision 5 stays: answers to non-streaming requests are still read as streams, with no per-route switch. On a 4-vCPU runner it costs about 3 ms and the non-streaming target is met (4.76 ms at p95 at 200 requests a second).
+- The three open questions in section 20 are closed: route group models as chosen in week 1, a rule for pinning the LiteLLM version, and a rule for when a fourth judge is added.
+- Week 4 starts with the gateway's first run against the real APIs and with recorded real streams, before any mid-stream code. Until then every gateway test runs against mocks or hand-written fixtures; only the week 1 seam test, which has its own clients, has called the real APIs.
+- OpenAI cache-write tokens are now counted (`prompt_tokens_details.cache_write_tokens`, billed at 1.25 times the input rate on GPT-5.6 and later).
+- Overhead is measured on GitHub's 4-vCPU runners for public repositories (`.github/workflows/bench.yml`), the machine size section 13 names, with a baseline commit measured right after on the same runner.
 
 ## References
 
