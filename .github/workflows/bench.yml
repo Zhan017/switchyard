@@ -1,0 +1,53 @@
+name: bench
+
+# Gateway overhead on a GitHub-hosted runner: 4 vCPUs and 16 GB for public repositories,
+# the machine size the spec's targets name. Measures this commit, then a baseline commit
+# right after it on the same runner, so the two can be compared despite runner noise.
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Commit to measure after this one, on the same runner
+        default: 91ab8a2
+      rates:
+        description: Requests per second, space separated
+        default: "100 200 300 400"
+
+jobs:
+  overhead:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      BASELINE: ${{ inputs.baseline }}
+      RATES: ${{ inputs.rates }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - name: Machine
+        run: |
+          echo "CPUs: $(nproc)"
+          grep -m1 "model name" /proc/cpuinfo
+          free -g | head -2
+      - name: This commit
+        run: |
+          uv sync --locked
+          # shellcheck disable=SC2086
+          uv run python -m bench.overhead --rates $RATES --seconds 15 --out "$RUNNER_TEMP/current"
+      - name: Baseline commit
+        run: |
+          git worktree add "$RUNNER_TEMP/baseline-src" "$BASELINE"
+          cd "$RUNNER_TEMP/baseline-src"
+          uv sync --locked
+          # shellcheck disable=SC2086
+          uv run python -m bench.overhead --rates $RATES --seconds 15 --out "$RUNNER_TEMP/baseline"
+      - name: Summary
+        run: |
+          {
+            echo "## This commit (${GITHUB_SHA::7})"
+            cat "$RUNNER_TEMP"/current/*.md
+            echo
+            echo "## Baseline ($BASELINE)"
+            cat "$RUNNER_TEMP"/baseline/*.md
+          } | tee -a "$GITHUB_STEP_SUMMARY"
