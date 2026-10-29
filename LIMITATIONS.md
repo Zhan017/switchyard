@@ -21,7 +21,6 @@ What Switchyard does not do, or does only partly, as of week 3. Each item says w
 
 - **Estimated usage is a character count,** about 3.5 characters per token plus a 15% margin, used only when a provider doesn't report usage (usually a stream cut short). Estimated numbers are always flagged and reported separately.
 - **DeepSeek's off-peak discount ignores Chinese public holidays,** so costs on those days are overstated.
-- **OpenAI cache writes are not counted.** GPT-6 Luna has a cache-write price, but the usage field that would report written tokens isn't documented in a form the adapter reads yet.
 - **Attempts that fail before the first token are recorded with zero tokens,** since providers generally don't bill them. A failure mid-answer counts the tokens received, estimated if the provider never reported them.
 - **Request records are best effort.** Rows are written to Postgres in batches by a background task. If Postgres is slow or down, queued rows are dropped and counted (`switchyard_records_dropped_total`); Prometheus and the log line still have every request. Rows are kept 30 days.
 - **Probes cost a little.** An open breaker is probed every 10 s with a one-token request, about six a minute per open model, recorded with cost class `probe`.

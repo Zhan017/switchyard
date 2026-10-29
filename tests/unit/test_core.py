@@ -83,6 +83,18 @@ def test_cost_with_cached_input() -> None:
     assert PRICES.cost("anthropic/claude-haiku-5-5", usage) == pytest.approx(expected)
 
 
+def test_openai_cache_writes_have_their_own_rate() -> None:
+    usage = Usage(
+        input_tokens=50_000,
+        output_tokens=1_000,
+        cached_input_tokens=10_000,
+        cache_write_tokens=30_000,
+    )
+    # 10K uncached at 0.10, 10K cached at 0.01, 30K written at 0.125, 1K output at 0.50
+    expected = (10_000 * 0.10 + 10_000 * 0.01 + 30_000 * 0.125 + 1_000 * 0.50) / 1e6
+    assert PRICES.cost("openai/gpt-6-luna", usage) == pytest.approx(expected)
+
+
 def test_long_context_tier_applies_to_every_token() -> None:
     usage = Usage(input_tokens=200_000, output_tokens=1_000)
     expected = (200_000 * 0.50 + 1_000 * 2.50) / 1e6

@@ -128,7 +128,7 @@ def test_openai_text_stream() -> None:
     assert error is None
     assert text_of(events) == "Hello world"
     assert Finish("stop") in events
-    assert UsageReport(Usage(12, 2, cached_input_tokens=4)) in events
+    assert UsageReport(Usage(12, 2, cached_input_tokens=4, cache_write_tokens=6)) in events
     assert sent["stream"] is True
     assert sent["stream_options"] == {"include_usage": True}
     assert sent["max_completion_tokens"] == 100

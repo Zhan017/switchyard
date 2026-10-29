@@ -116,11 +116,14 @@ class OpenAIAdapter(Adapter):
         return out
 
     def usage(self, raw: dict[str, Any]) -> Usage:
+        # prompt_tokens includes cached and cache-written tokens; each is billed at its
+        # own rate (GPT-5.6 and later charge for cache writes).
         details = raw.get("prompt_tokens_details") or {}
         return Usage(
             input_tokens=int(raw.get("prompt_tokens") or 0),
             output_tokens=int(raw.get("completion_tokens") or 0),
             cached_input_tokens=int(details.get("cached_tokens") or 0),
+            cache_write_tokens=int(details.get("cache_write_tokens") or 0),
         )
 
     async def complete(self, model: str, options: ModelConfig, request: ChatRequest) -> Completion:
