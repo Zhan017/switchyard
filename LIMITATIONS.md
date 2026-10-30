@@ -1,10 +1,12 @@
 # Limitations
 
-What Switchyard does not do, or does only partly, as of week 3. Each item says whether it is planned.
+What Switchyard does not do, or does only partly, as of week 4. Each item says whether it is planned.
 
 ## Routing and resilience
 
-- **Failover happens only before the client sees anything.** Once text, a refusal or a complete tool call has been sent, a provider failure ends the stream with an error event. Finishing the answer on another provider is mid-stream failover, in week 4.
+- **Mid-stream failover continues text only.** When a stream dies after text went out, another model finishes it in the same stream. It doesn't continue a tool call, a refusal, a JSON answer (those are buffered and restarted), or a request with stop sequences (a stop sequence could span the join): those end with an error event, or as a tool-call turn when complete tool calls already went out. At most 2 continuation attempts per request.
+- **The continuation strategies aren't measured yet.** Each model's `continuation` setting comes from the week 1 seam test, read by one person on 30 prompts. The full evaluation, with three judges and hand labels, decides them. Mid-stream failover has run only against mockllm, whose text is random words, so the scenarios show that answers complete, not that the joins read well.
+- **A repaired continuation starts a little late.** Seam repair holds the first 200 to 400 characters of a continuation before sending any of it, and the delay is recorded as seam latency.
 - **No request queue.** When every provider is down, open or cooling down, the request fails fast with 503 and `Retry-After`. Deliberate: see the spec, section 2.2.
 - **Non-streaming requests are read from the provider as a stream** (decision 5), so they cost about as much gateway CPU as streamed ones. In exchange, a hung provider is caught within the first-token limit on every request.
 - **Replicas agree within about half a second,** not instantly: breakers are shared through Redis by a background sync (decision 6). The five-in-a-row trip rule and cooldowns count per replica. Redis Cluster isn't supported.

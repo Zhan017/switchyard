@@ -1,6 +1,6 @@
 # Switchyard: spec
 
-Status: v2.2, week 3 done · Owner: Zhan Kuatuly · Last updated: 2026-10-29 · Changes from v1 are listed in section 21.
+Status: v2.3, week 4 in progress · Owner: Zhan Kuatuly · Last updated: 2026-10-29 · Changes from v1 are listed in section 21.
 
 ## 1. Summary
 
@@ -238,7 +238,6 @@ models:
   anthropic/claude-haiku-5-5:
     sampling_params: false   # Claude Haiku 5.5 rejects temperature, top_p and top_k
     json_object: false       # JSON only with a schema
-    continuation: instructed # Claude 4.6 and later reject prefill with a 400
     request_overrides:       # merged into every request body
       thinking: { type: disabled }
   openai/gpt-6-luna:
@@ -259,7 +258,7 @@ Capability flags default to on: `tools`, `json_object`, `json_schema`, `sampling
 - While a request waits in DeepSeek's queue, the stream sends `: keep-alive` comments for up to 10 minutes. They don't count as a first token or as content, so the time-to-first-token budget still catches a queued request.
 - DeepSeek's limits are on concurrent requests, so its 429s are treated like any other 429 cooldown. Usage reports cache hits and misses separately, priced as cached and uncached input.
 
-`continuation` is `native`, `instructed` or `none`, and the seam evaluation decides each value. Pick the exact models at build time. Cheap models tend to differ most in style, which affects seams, so the evaluation records the models it used.
+`continuation` is the strategy a model uses when it finishes another model's answer: `error`, `restart`, `native`, `instructed`, `instructed_repair` or `anchored` (7.6), default `instructed_repair`. `native` is accepted only on a deepseek provider: Claude 4.6 and later reject a trailing assistant message with a 400, and OpenAI has no documented continuation. The seam evaluation decides each value. Pick the exact models at build time. Cheap models tend to differ most in style, which affects seams, so the evaluation records the models it used.
 
 Candidate selection walks the chain in order. It skips models whose breaker is open, models in a 429 cooldown, and models missing a capability the request needs.
 
@@ -337,6 +336,16 @@ The production default per model is the strategy that measures best, set through
 5. Send `: heartbeat` comments every 3 s until the continuation's first content is ready.
 6. Run seam repair, then forward. Write the failover comment, keep the same chunk `id`, sum usage across attempts, and record each attempt's cost.
 7. Allow at most 2 mid-stream failovers per request. If all fail, send the error event.
+
+**As built (week 4).** Code in `core/midstream.py` (the continuer), `streaming/continuation.py` (the requests, with wording shared with the seam evaluation, so production sends what was measured) and `streaming/relay.py`:
+
+- The strategy is the continuing model's `continuation` setting. Candidates come in route order, skipping any model that already failed in this request and any whose breaker is open or cooling down. A continuation is never retried on the same provider.
+- "At most 2" counts continuation attempts, including ones that fail before their first content. Each is an attempt with role `midstream`; the 3-attempt cap in 7.5 covers attempts before the first token only.
+- The client sees `: switchyard failover: <error kind> after <n> characters` as soon as the failure is noticed, `: heartbeat` every 3 s while the continuation starts, and `: switchyard continuing on <model> with <strategy>` just before its text.
+- `max_tokens` is reduced by an estimate of the tokens already sent (it leans high), with a floor of 16. Anchored continuation adds 40 for the copied words. When the conversation ends with a tool result, the anchored instruction goes in a new user turn.
+- A meta reply is recorded as outcome `meta_reply`, which the breaker doesn't count, and the next candidate is tried.
+- Seam repair sees at least the first 200 characters of the continuation, then on to the end of the first sentence, at most 400, not "the first sentence or 200 characters, whichever comes first": on 4 of the 90 real joins from the week 1 seam test, the shorter rule gave a different result from repairing the whole continuation, because a sentence ended before the repeated words did. The longer rule gave the same result on all 90, which a test checks.
+- Non-streaming requests are read whole before anything is sent (decision 5), so a cut there is an ordinary failover, never a continuation.
 
 **Seam repair**
 
@@ -443,8 +452,8 @@ breaker_events(id, provider_model, from_state, to_state, reason, at)
 | --- | --- | --- | --- | --- |
 | S1 | v0.1 | Primary returns 500 on 50% of requests | 10 req/s for 120 s, mock upstreams | Success lower bound ≥ 99%; breaker opens |
 | S4 | v0.1 | Primary refuses connections for 5 min, then recovers | 10 req/s for 7 min, mock upstreams | Success lower bound ≥ 99%; breaker opens within 10 s; closes within 45 s of recovery (35 s by formula, plus margin) |
-| S5 | v0.1 | Primary's stream is cut at a random 20 to 80% of the answer | (a) 5 req/s for 120 s on mocks; (b) recorded real streams, cut and continued on real providers | (a) completion lower bound ≥ 99%. (b) a measurement, not pass or fail: repeated-text rate and seamless rate by strategy |
-| S6 | v0.1 | Primary stops sending tokens mid-stream without closing | Same as S5 | Same as S5; stall detected within the stall timeout plus 1 s |
+| S5 | v0.1 | 30% of the primary's streams are cut at a random 20 to 80% of the answer | (a) 5 req/s for 120 s on mocks, every request streamed; (b) recorded real streams, cut and continued on real providers | (a) completion lower bound ≥ 99%, over all requests and over the requests finished after a mid-stream failover. (b) a measurement, not pass or fail: repeated-text rate and seamless rate by strategy |
+| S6 | v0.1 | 30% of the primary's streams stop sending tokens mid-stream without closing, with keep-alive comments every second | Same as S5 | Same as S5; stall noticed within the stall timeout plus 1 s on the worst request |
 | S8 | v0.1 | All providers fail for 3 min (from 60 s to 240 s), in two variants: refusing connections, and hanging | 10 req/s for 5 min, mock upstreams | Refusing: lower bound ≥ 99% of requests sent during the outage get 503 within 1 s. Hanging: the same within the time-to-first-token budget plus 1 s (6 s), for requests sent from 15 s into the outage; before that, each attempt costs a full 5 s first-token timeout until both breakers open, so the first requests wait up to about 15 s, reported separately. Attempts ≤ 1.2× requests over the whole run. Normal service within 45 s of recovery |
 | S2 | v1 | Primary returns 429 with `Retry-After: 30` for 2 min | 10 req/s for 4 min | Success lower bound ≥ 99%; no same-provider retries during the cooldown |
 | S7 | v1 | Primary alternates 20 s healthy and 20 s down for 5 min | 10 req/s for 6 min | Success lower bound ≥ 98%; at most 2 breaker transitions per cycle |
@@ -649,6 +658,13 @@ Week 3, 2026-10-28:
 - mockllm runs as two servers behind TCP gates, so `refuse_connections` is a real refused connection. `flap` and `replay` added.
 - Results: S1, S4, S8-refuse and S8-hang all pass with 5 seeds ([results](docs/results/scenarios-2026-10-28.md)). The one S4 miss is a stream cut mid-answer, left for week 4.
 - Scenario attempts are counted at the gateway when it is Switchyard: a mock can't count a connection it refused. Against another gateway the mock-side count is used and the report says so.
+
+Week 4, mid-stream failover, 2026-10-30:
+
+- Mid-stream failover is built: all six strategies, seam repair on the repaired ones, heartbeats, DeepSeek's native continuation on its beta URL, and accounting per attempt (7.6, "As built").
+- `continuation` takes the six strategy names; the default is `instructed_repair`, the best measured strategy without native support in week 1. DeepSeek stays `native`.
+- The seam buffer is longer than first specified (at least 200 characters and through the first sentence, at most 400), so repairing the buffer gives the same result as repairing the whole continuation on all 90 real week 1 joins.
+- S5 and S6 were pinned down before their first run: 30% of the primary's streams break (under the breaker's 40% rule, so most requests still reach it and hundreds are continued; with every stream broken, the breaker would open after 5 and send nearly everything to the second model), every request streams (only streams are continued), completion is also judged on just the continued requests, and S6's stall detection is judged on the worst request.
 
 Decisions, 2026-10-29:
 

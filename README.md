@@ -2,7 +2,7 @@
 
 An LLM gateway that keeps answers flowing when providers fail. When a provider dies halfway through a streamed answer, Switchyard finishes the answer on another provider, and measures how well each way of doing that works.
 
-**Status:** week 3 of 5. One OpenAI-compatible endpoint in front of OpenAI, Anthropic and DeepSeek, with circuit breakers, retries and failover before the first token, and cost per tenant and feature. Mid-stream failover comes in week 4. The full plan is in [SPEC.md](SPEC.md).
+**Status:** week 4 of 5. One OpenAI-compatible endpoint in front of OpenAI, Anthropic and DeepSeek, with circuit breakers, retries, failover, and mid-stream failover that finishes a broken answer on another model; cost per tenant and feature. Measuring how well those joins read comes next. The full plan is in [SPEC.md](SPEC.md).
 
 ## The question
 
@@ -65,7 +65,8 @@ uv run switchyard-chaos run chaos/scenarios/s4.yaml
 - Retries on the same provider only before the first token, at most once, within a 20% retry budget; failover down the route, at most 3 attempts. Refusals and content filters are never failed over.
 - Breakers and health shared between replicas through Redis with no Redis call on the request path, failing open to local state when Redis is down ([decision 6](docs/decisions/0006-no-redis-on-the-request-path.md)). Request and attempt records in Postgres, batched so they never block a request.
 - Smoke-tested against the real OpenAI, Anthropic and DeepSeek APIs: text, streaming, tools, JSON and the breaker's probe on each model ([report](docs/results/smoke/20261029-070701/report.md)). The first run found that GPT-6 Luna rejects one-token requests, so its breaker could never have closed; fixed and rerun.
-- Provider failures before anything reached the client become a failover, or a proper HTTP error if nothing is left; after that, a clean error event the OpenAI SDKs raise.
+- Mid-stream failover: when a stream dies after text went out, the next healthy model finishes the answer in the same stream, with the model's configured strategy (restart, native, instructed, instructed with seam repair, or anchored), heartbeats while it starts, and one usage total. Seam repair trims repeated words, prefaces and broken joins in the first 200 to 400 characters.
+- Provider failures before anything reached the client become a failover, or a proper HTTP error if nothing is left. After text went out and no continuation is possible, a clean error event the OpenAI SDKs raise.
 - Tool calls forwarded only once complete, and JSON answers only once valid, so a failover never has half of either to take back ([decision 3](docs/decisions/0003-forward-tool-calls-whole.md)).
 - mockllm with injectable faults: error rates, status codes, slow first tokens, cut streams, stalls with keep-alives, malformed chunks, error events inside a 200 stream, hangs, flapping, recorded-stream replay, and real refused connections through a TCP gate.
 - `switchyard-chaos`: outage scenarios with fixed targets, judged on 95% intervals, with JSON and Markdown reports.
