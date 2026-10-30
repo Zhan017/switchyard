@@ -8,3 +8,4 @@ __pycache__/
 dist/
 *.egg-info/
 eval/seam/results/*-dry/
+eval/seam/results/v0.1-dry/

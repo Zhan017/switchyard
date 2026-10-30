@@ -1,0 +1,90 @@
+# The v0.1 seam evaluation (SPEC 12.3), fixed before the first run and tagged with the
+# prompts and the harness as seam-eval-v0.1. Change nothing here after a run has started.
+
+seed: 31
+max_tokens: 1200
+
+# The models, by family. Their provider and options (request overrides, probe size) are
+# copied from config/switchyard.yaml, so the evaluation sends what the gateway sends.
+families:
+  claude: anthropic/claude-haiku-5-5
+  gpt: openai/gpt-6-luna
+  deepseek: deepseek/deepseek-flash
+
+primaries: [claude, gpt]
+
+# primary -> fallback
+pairs:
+  - [claude, gpt]
+  - [gpt, claude]
+  - [claude, deepseek]
+  - [gpt, deepseek]
+  - [claude, claude]
+  - [gpt, gpt]
+
+# The evaluation's names for the gateway's continuation strategies. N only where the
+# fallback is DeepSeek, the one provider with a documented continuation.
+strategies:
+  R: restart
+  I: instructed
+  I+S: instructed_repair
+  A: anchored
+  N: native
+
+# Local view: this many characters either side of the join.
+local_chars: 300
+
+judges:
+  sonnet:
+    model: anthropic/claude-sonnet-5-5
+    # Not in config/switchyard.yaml: only the evaluation uses it.
+    options:
+      sampling_params: false
+      json_object: false
+      # Adaptive thinking is Sonnet 5.5's default; low effort keeps it short.
+      request_overrides:
+        output_config: { effort: low }
+    max_tokens: 4096 # thinking counts toward it
+    # A guess for the first estimate, thinking included; after 20 calls the measured mean
+    # replaces it.
+    expected_output_tokens: 300
+  deepseek:
+    model: deepseek/deepseek-flash
+    max_tokens: 300
+    expected_output_tokens: 80
+  gpt:
+    model: openai/gpt-6-luna
+    max_tokens: 300
+    expected_output_tokens: 80
+
+# Sonnet judges every item in both views. The neutral judge of each pair, from neither of
+# its families, judges the local view and gives the pair's headline.
+neutral:
+  claude-gpt: deepseek
+  gpt-claude: deepseek
+  claude-claude: deepseek
+  claude-deepseek: gpt
+  gpt-deepseek: sonnet
+  gpt-gpt: sonnet
+
+labels:
+  per_strategy: 10 # 50 items in all
+  seed: 50
+kappa_gate: 0.6
+
+# USD caps per provider. Each stage estimates its cost first and refuses to start over a
+# cap; while it runs, no call starts that could take a provider over its cap.
+budget_usd:
+  anthropic: 45.0
+  openai: 0.50
+  deepseek: 1.20
+
+concurrency:
+  anthropic: 6
+  openai: 4
+  deepseek: 4
+
+# A call that fails for a provider reason (rate limit, server error, timeout) is tried
+# again up to this many times in all. A meta reply refused by the gateway is a result,
+# not a failure, and is not tried again.
+tries: 3

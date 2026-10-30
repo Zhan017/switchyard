@@ -1,0 +1,189 @@
+# The v0.1 seam evaluation's prompts (spec 12.3), written 2026-10-30 before any run.
+# 60 prompts that need long answers: 30 prose, 18 code, 12 lists and steps. None repeat a
+# week 1 prompt or topic, since seam repair was tuned on the week 1 joins.
+
+# Prose (30)
+- id: e01
+  kind: prose
+  text: Explain how the human ear turns sound waves into signals the brain understands, from the outer ear to the auditory nerve.
+- id: e02
+  kind: prose
+  text: Write a short story of about 500 words about a night-shift baker who discovers that someone has been leaving handwritten recipes under the shop door.
+- id: e03
+  kind: prose
+  text: Explain how plate tectonics causes earthquakes, mountains and volcanoes, with one real example of each.
+- id: e04
+  kind: prose
+  text: Describe how the printing press changed science, religion and politics in 16th-century Europe.
+- id: e05
+  kind: prose
+  text: Explain how a credit score is calculated and what a person with a thin credit file can do to build one over two years.
+- id: e06
+  kind: prose
+  text: Write a persuasive op-ed arguing that cities should replace some car lanes with protected bike lanes, and answer the strongest objection.
+- id: e07
+  kind: prose
+  text: Explain how noise-cancelling headphones work and why they handle a steady engine hum better than voices.
+- id: e08
+  kind: prose
+  text: Write a eulogy for a grandmother who ran a small village shop for forty years and knew every customer by name.
+- id: e09
+  kind: prose
+  text: Explain what a database index is, how a B-tree index speeds up lookups, and when adding an index makes writes slower.
+- id: e10
+  kind: prose
+  text: Describe the life cycle of a star like the Sun, from a gas cloud to a white dwarf.
+- id: e11
+  kind: prose
+  text: Write a product description and short FAQ for a fictional smart water bottle that reminds its owner to drink.
+- id: e12
+  kind: prose
+  text: Explain how GPS works, including why satellites need relativity corrections to stay accurate.
+- id: e13
+  kind: prose
+  text: Write a letter from a team lead to a new hire, welcoming them and explaining how the team works and what their first month will look like.
+- id: e14
+  kind: prose
+  text: Explain the causes of the 2008 financial crisis in plain language for someone with no background in finance.
+- id: e15
+  kind: prose
+  text: Describe how bees communicate the location of flowers through the waggle dance, and how scientists worked it out.
+- id: e16
+  kind: prose
+  text: Explain the difference between weather and climate, and why a cold winter doesn't disprove global warming.
+- id: e17
+  kind: prose
+  text: Write a short science-fiction story of about 500 words set on a cargo ship whose navigation computer starts asking the crew personal questions.
+- id: e18
+  kind: prose
+  text: Explain how public-key cryptography lets two strangers agree on a secret over an open network, with an analogy and then the real mechanism.
+- id: e19
+  kind: prose
+  text: Compare renting and buying a home for a young couple in a large city, covering cost, flexibility, risk and long-term wealth.
+- id: e20
+  kind: prose
+  text: Explain how antibiotics work and why resistance spreads, and what individuals and hospitals can do about it.
+- id: e21
+  kind: prose
+  text: Write an internal memo announcing that a company is moving from weekly to monthly releases, explaining the reasons and what changes for each team.
+- id: e22
+  kind: prose
+  text: Explain how sleep affects memory, including what happens in the brain during deep sleep and REM sleep.
+- id: e23
+  kind: prose
+  text: Describe the history of the steppe nomads of Central Asia and how horse culture shaped their way of life.
+- id: e24
+  kind: prose
+  text: Explain how a load balancer distributes traffic, and compare round robin, least connections and consistent hashing.
+- id: e25
+  kind: prose
+  text: Write a review of a fictional neighbourhood ramen restaurant, covering the broth, the service, the room and the value.
+- id: e26
+  kind: prose
+  text: Explain how electric car batteries degrade over time and what owners can do to make them last longer.
+- id: e27
+  kind: prose
+  text: Explain why the Roman Republic turned into an empire, focusing on the century before Augustus.
+- id: e28
+  kind: prose
+  text: Write a speech for a high school graduation about learning to be comfortable with not knowing what comes next.
+- id: e29
+  kind: prose
+  text: Explain how a search engine ranks web pages, from crawling and indexing to the signals used in ranking.
+- id: e30
+  kind: prose
+  text: Explain what makes bread rise, comparing yeast, sourdough starter and baking soda, and what goes wrong when it doesn't.
+
+# Code (18)
+- id: e31
+  kind: code
+  text: Write a Python function that parses a log file of lines like "2026-10-30 12:00:01 ERROR payment timeout" and returns a count of each level per hour, with type hints, docstrings and tests using pytest.
+- id: e32
+  kind: code
+  text: Implement a token bucket rate limiter in Go that is safe for concurrent use, with a constructor, an Allow method and a short example, then explain the design.
+- id: e33
+  kind: code
+  text: Write a React component in TypeScript for a searchable, keyboard-navigable dropdown list, and explain how the keyboard handling works.
+- id: e34
+  kind: code
+  text: Implement a trie in Python with insert, search and starts_with, plus a function that returns all words with a given prefix, and explain the time complexity.
+- id: e35
+  kind: code
+  text: Write SQL for a table events(user_id, event_type, created_at) that computes daily active users, a 7-day rolling average and week-over-week retention, and explain each query.
+- id: e36
+  kind: code
+  text: Write a Rust command-line tool that counts words, lines and characters in a file, like wc, using only the standard library, and explain the error handling.
+- id: e37
+  kind: code
+  text: Implement a retry decorator in Python with exponential backoff, jitter, a maximum number of attempts and a list of exceptions to retry, with examples.
+- id: e38
+  kind: code
+  text: Write a Node.js Express middleware that validates a JSON Web Token, attaches the user to the request and returns clear errors, and explain the security checks.
+- id: e39
+  kind: code
+  text: Implement Dijkstra's shortest path algorithm in Java with a priority queue, test it on a small graph, and explain why it fails with negative edges.
+- id: e40
+  kind: code
+  text: Write a Dockerfile and a docker-compose file for a Python web app with a PostgreSQL database and a Redis cache, and explain each choice.
+- id: e41
+  kind: code
+  text: Write a Python script that watches a folder and resizes any new image to a maximum width of 1200 pixels, keeping the aspect ratio, and explain how it avoids processing a file twice.
+- id: e42
+  kind: code
+  text: Implement a simple key-value store in C with put, get and delete using a hash table with chaining, and explain how it handles collisions and resizing.
+- id: e43
+  kind: code
+  text: Write a GitHub Actions workflow that runs tests on three Python versions, caches dependencies and publishes a package to PyPI on a tag, and explain each step.
+- id: e44
+  kind: code
+  text: Implement a circular buffer class in C++ with push, pop, size and full, using templates, and explain the edge cases.
+- id: e45
+  kind: code
+  text: Write a Python function that merges overlapping time intervals and another that finds free slots between meetings in a workday, with tests.
+- id: e46
+  kind: code
+  text: Write a Kotlin data class for an order with a list of line items, and functions that compute totals with tax and discounts, with unit tests.
+- id: e47
+  kind: code
+  text: Implement a basic markdown-to-HTML converter in JavaScript that handles headings, bold, italics, links and lists, and explain its limits.
+- id: e48
+  kind: code
+  text: Write a Python class that paginates through a REST API with cursor-based pagination, handles rate limits with Retry-After, and yields items one at a time.
+
+# Lists and steps (12)
+- id: e49
+  kind: list
+  text: Give a step-by-step guide to setting up a new laptop for software development on macOS, from the first boot to running a project.
+- id: e50
+  kind: list
+  text: List 12 habits of effective code reviewers, each with a short explanation and an example comment.
+- id: e51
+  kind: list
+  text: Give a step-by-step plan for running a one-day team offsite for 15 people, from booking to follow-up.
+- id: e52
+  kind: list
+  text: List the steps to diagnose a slow web page, from the browser's network tab to the database, with what to look for at each step.
+- id: e53
+  kind: list
+  text: Give a 30-day plan for someone who wants to start running and finish a 5 km race, with each week's goals.
+- id: e54
+  kind: list
+  text: List 10 questions to ask in a job interview as the candidate, each with what the answer tells you.
+- id: e55
+  kind: list
+  text: Give a checklist for launching a small online store, grouped into legal, payments, product, marketing and support.
+- id: e56
+  kind: list
+  text: Give step-by-step instructions to write an incident postmortem, from collecting the timeline to tracking the action items.
+- id: e57
+  kind: list
+  text: List 12 ways to cut a household's monthly spending without making life much worse, each with a rough saving.
+- id: e58
+  kind: list
+  text: Give a step-by-step guide to brewing pour-over coffee, including grind size, water temperature and timing, and how to adjust if it tastes sour or bitter.
+- id: e59
+  kind: list
+  text: Give an onboarding plan for a new backend engineer's first two weeks, day by day.
+- id: e60
+  kind: list
+  text: List the steps to prepare a small apartment for a long winter, from windows and heating to supplies.
