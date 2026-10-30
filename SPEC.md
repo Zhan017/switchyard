@@ -1,6 +1,6 @@
 # Switchyard: spec
 
-Status: v2.3, week 4 in progress · Owner: Zhan Kuatuly · Last updated: 2026-10-29 · Changes from v1 are listed in section 21.
+Status: v2.3, week 4 in progress · Owner: Zhan Kuatuly · Last updated: 2026-10-30 · Changes from v1 are listed in section 21.
 
 ## 1. Summary
 
@@ -496,6 +496,24 @@ Go or no-go: if I+S looks clean on most joins, build as planned. If it doesn't, 
 - **Budget:** estimate the full run's cost from the week 1 run and set a cap before starting. If it's over the cap, run the non-neutral judges on a 25% sample first, then cut prompts per pair to 100, before cutting any pair.
 - **Report:** one table of strategy by provider pair, with intervals, seam latency and extra cost.
 
+### 12.3 The v0.1 evaluation (decided 2026-10-30, before any run)
+
+The full evaluation in 12.2 is v1. v0.1 runs a smaller one, shaped by the API credit available (plenty on Anthropic, little on OpenAI and DeepSeek), with the design fixed here and tagged `seam-eval-v0.1` with the prompts and the harness (`eval/seam/v01/`) before the first run.
+
+- **Through the gateway.** Every continuation is produced by Switchyard itself, not by a script: a local fake primary streams a real reference answer and drops the connection at the cut, and the gateway's continuer finishes it on the real fallback model, with seam repair, heartbeats and accounting as in production, and the production limits (5 s to first token, 5 s stall). Breakers are switched off, since the fake primary fails every request on purpose. So the measured seam latency and extra cost are the gateway's. This is also S5b.
+- **Prompts:** 60 fresh prompts, none from week 1 (seam repair was tuned on those): 30 prose, 18 code, 12 lists and steps, each needing a long answer.
+- **References:** each prompt answered once by Claude Haiku 5.5 and once by GPT-6 Luna, the two primaries, through the gateway, `max_tokens` 1,200.
+- **Cuts:** one seeded point per reference, between 20% and 80% of its characters, on a token-like boundary. Every pair and strategy from that primary uses the same cut.
+- **Pairs:** the six in 12.2: Claude to GPT, GPT to Claude, Claude to DeepSeek, GPT to DeepSeek, Claude to Claude, GPT to GPT.
+- **Strategies:** R, I, I+S and A on every pair, and N on the two DeepSeek pairs: 1,560 stitched answers in all. Each is its own call through the gateway, so I and I+S are separate samples. A call that fails for a provider reason (rate limit, server error, timeout) is tried up to 3 times; a meta reply the gateway refuses is a result, not a failure.
+- **Views:** *local*, 300 characters either side of the join and the same span of the reference, trimmed to whole words, so only the join can give it away; and *full*, the whole reference against the whole stitched answer, which also shows a change of style.
+- **Question:** a judge sees the prompt and both texts, in both orders, and answers which one was interrupted and continued by a different writer. An item is seamless if the judge is wrong in either order. A continuation the gateway refused (a meta reply) counts as not seamless; an item still failing after every try is reported as unfinished and left out of the rate. The headline is the local view, with 95% Wilson intervals.
+- **Judges:** Claude Sonnet 5.5 (adaptive thinking at low effort) judges every item in both views. On the four pairs that include a Claude model, a judge outside both families also judges the local view: DeepSeek Flash for Claude to GPT, GPT to Claude and Claude to Claude; GPT-6 Luna for Claude to DeepSeek. The headline for each pair comes from its neutral judge: Sonnet for GPT to DeepSeek and GPT to GPT, the others as listed. Sonnet's verdicts on the other four pairs are reported as a self-preference check.
+- **Human check:** 50 items, 10 per strategy, spread over the pairs and drawn with a fixed seed, are labelled by Zhan on the local view, blind to strategy and models, with "can't tell" allowed (counted as seamless), before any judge runs: the judge stage refuses to start until all 50 labels are in. All three judges judge these 50. A judge's numbers are published only if its Cohen's kappa against the labels is at least 0.6. If a neutral judge fails, its pairs use Sonnet's verdicts, marked as judged by a model from one of the pair's families, and the report says so. (No fourth judge in v0.1: no DeepInfra credit.)
+- **Also reported, per strategy and pair:** repeated text (8 words, 12.2), prefaces, meta replies, failed continuations, seam latency (from the failover comment to the first continued text, as the client sees it), and extra cost per failover (the gateway's own cost for the continuation).
+- **Budget:** each stage estimates its cost before it starts and refuses to start over a cap, and no call starts that could take a provider over its cap: Anthropic $45 (about $34 expected, nearly all Sonnet, assuming 300 output tokens a call with thinking), OpenAI $0.50 (about $0.22), DeepSeek $1.20 (about $0.80 at peak, $0.40 off-peak). The harness refuses to run at DeepSeek's peak (01:00 to 04:00 and 06:00 to 10:00 UTC on weekdays). Judgments run in order of importance: the labelled items, then the headline, then Sonnet's local view, then Sonnet's full view in a seeded random order, so if money runs out the full view covers a random subset.
+- **Order:** commit and tag this plan, the prompts and the harness; a pilot on 2 prompts, to catch harness bugs only (no tuning; its items are part of the run); generate the rest; sample and label the 50; run the judges; analyze. Each stage is resumable and writes its results to `eval/seam/results/v0.1/`.
+
 ## 13. Performance targets
 
 - Gateway overhead p95 under 10 ms for non-streaming requests, and under 10 ms added to time to first token when streaming, against `mockllm` with fixed latency at 200 requests per second on one 4-vCPU container.
@@ -564,7 +582,7 @@ Planned in hours, at 10 to 12 hours a week.
 | 1 | 10 to 12 | Seam test | Done 2026-10-23: [report](eval/seam/results/20261023-050151/report.md) with joins and a go note. The overhead stub moved to week 2 |
 | 2 | 10 to 12 | Proxy | Done 2026-10-28: OpenAI, Anthropic and DeepSeek adapters, streaming and non-streaming, tools and JSON; `mockllm` with faults; tenants and features; cost with estimated usage; `/metrics`; first-token, stall and deadline limits; overhead measured; Docker image and compose file; CI green |
 | 3 | 10 to 12 | Resilience | Done 2026-10-28: health, breakers with probes, retries, failover, Redis shared state and Postgres records; S1, S4 and S8 pass on mocks, 5 seeds each ([results](docs/results/scenarios-2026-10-28.md)) |
-| 4 | 10 to 12 | Mid-stream | Done: the gateway's first run against the real APIs and recorded real streams (2026-10-29, [smoke test](docs/results/smoke/20261029-070701/report.md), which found and fixed GPT-6 Luna's probe); strategies, seam repair, tool-call rules and heartbeats; S5 and S6 pass on mocks, 5 seeds each (2026-10-30, [results](docs/results/scenarios-2026-10-30.md)). Left: the first seam evaluation on real providers, on fresh prompts and including A, and S5b and S6b on recorded real streams |
+| 4 | 10 to 12 | Mid-stream | Done: the gateway's first run against the real APIs and recorded real streams (2026-10-29, [smoke test](docs/results/smoke/20261029-070701/report.md), which found and fixed GPT-6 Luna's probe); strategies, seam repair, tool-call rules and heartbeats; S5 and S6 pass on mocks, 5 seeds each (2026-10-30, [results](docs/results/scenarios-2026-10-30.md)). Left: the first seam evaluation on real providers, on fresh prompts and including A (designed in 12.3, harness built; it is also S5b), and S6b |
 | 5 | 10 to 12 | v0.1 release | LiteLLM baseline with two configs and both endpoints; results tables; README, diagram, video, LIMITATIONS; tag v0.1 |
 
 v0.1 is about 50 to 60 hours. v1 (S2, S7, S10, the full 200-prompt evaluation with hand labels) adds about 20 to 30 hours. Stretch work comes after that, in the cut order from section 4.
@@ -666,6 +684,12 @@ Week 4, mid-stream failover, 2026-10-30:
 - The seam buffer is longer than first specified (at least 200 characters and through the first sentence, at most 400), so repairing the buffer gives the same result as repairing the whole continuation on all 90 real week 1 joins.
 - S5 and S6 pass on mocks, 5 seeds each: all 6,000 requests completed, including all 1,306 finished after a mid-stream failover, and stalls were noticed after 5.02 s at worst ([results](docs/results/scenarios-2026-10-30.md)).
 - S5 and S6 were pinned down before their first run: 30% of the primary's streams break (under the breaker's 40% rule, so most requests still reach it and hundreds are continued; with every stream broken, the breaker would open after 5 and send nearly everything to the second model), every request streams (only streams are continued), completion is also judged on just the continued requests, and S6's stall detection is judged on the worst request.
+
+The v0.1 seam evaluation, 2026-10-30:
+
+- Designed and built before any run (12.3): 60 fresh prompts, six pairs, five strategies, 1,560 stitched answers produced by the gateway itself, Sonnet plus a neutral judge per pair, 50 human labels gating each judge at kappa 0.6. Shaped by credit: Sonnet does most of the judging because Anthropic credit is plentiful and OpenAI and DeepSeek credit is not.
+- The gateway's `switchyard` summary now carries the seam actions and buffer time, why an answer wasn't continued, and each upstream call's tokens and cost, and the error event at the end of a broken stream carries the summary too. The evaluation reads its numbers from there, as any client could.
+- Claude Sonnet 5.5's price is in `config/prices.yaml` ($2 and $10 per million tokens, checked 2026-10-30).
 
 Decisions, 2026-10-29:
 
