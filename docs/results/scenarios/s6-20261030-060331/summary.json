@@ -1,0 +1,313 @@
+{
+  "scenario": {
+    "id": "S6",
+    "title": "The primary stops sending tokens partway through the answer",
+    "release": "v0.1",
+    "description": "For the whole run, 30% of the first model's streams stop sending tokens at a random 20 to 80% of the answer and keep the connection open, sending a keep-alive comment every second as DeepSeek does while queued. Keep-alives aren't content, so the 5 s stall limit should still fire, and Switchyard should finish the answer on the second model. Every request streams, and 30% stays under the breaker's 40% rule, as in S5.",
+    "topology": {
+      "gateway": "Switchyard, route group `mock` (mock-a/mock first, then mock-b/mock)",
+      "primary": "mockllm behind a gate, serving mock-a/mock",
+      "secondary": "mockllm behind a gate, serving mock-b/mock"
+    },
+    "traffic": {
+      "model": "mock",
+      "rate_rps": 5.0,
+      "duration_s": 120.0,
+      "stream_share": 1.0,
+      "max_tokens": [
+        16,
+        32,
+        48,
+        64
+      ],
+      "timeout_s": 130.0
+    },
+    "seeds": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "faults": [
+      {
+        "upstream": "primary",
+        "mode": "stall_after_tokens",
+        "params": {
+          "fraction": [
+            0.2,
+            0.8
+          ],
+          "rate": 0.3,
+          "keep_alive_s": 1
+        },
+        "model": null,
+        "start_s": 0.0,
+        "duration_s": 120.0
+      }
+    ],
+    "checks": [
+      {
+        "kind": "success_rate",
+        "description": "Requests that completed",
+        "min": 0.99,
+        "max": null,
+        "max_s": null,
+        "model": null,
+        "window": {
+          "from_s": 0.0,
+          "to_s": null
+        },
+        "only": "all"
+      },
+      {
+        "kind": "success_rate",
+        "description": "Requests finished after a mid-stream failover that completed",
+        "min": 0.99,
+        "max": null,
+        "max_s": null,
+        "model": null,
+        "window": {
+          "from_s": 0.0,
+          "to_s": null
+        },
+        "only": "midstream"
+      },
+      {
+        "kind": "detection_time",
+        "description": "Stall noticed after the last token, stall limit (5 s) plus 1 s",
+        "min": null,
+        "max": null,
+        "max_s": 6.0,
+        "model": null,
+        "window": {
+          "from_s": 0.0,
+          "to_s": null
+        },
+        "only": "all"
+      }
+    ]
+  },
+  "verdict": "pass",
+  "invalid": [],
+  "checks": [
+    {
+      "kind": "success_rate",
+      "description": "Requests that completed",
+      "target": "lower bound >= 99%",
+      "window": {
+        "from_s": 0.0,
+        "to_s": null
+      },
+      "measured": "100.00% (3000 of 3000; 95% interval 99.87% to 100.00%)",
+      "interval": {
+        "hits": 3000,
+        "total": 3000,
+        "low": 0.9987211512746742,
+        "high": 1.0
+      },
+      "per_seed": [
+        {
+          "seed": 1,
+          "hits": 600,
+          "total": 600
+        },
+        {
+          "seed": 2,
+          "hits": 600,
+          "total": 600
+        },
+        {
+          "seed": 3,
+          "hits": 600,
+          "total": 600
+        },
+        {
+          "seed": 4,
+          "hits": 600,
+          "total": 600
+        },
+        {
+          "seed": 5,
+          "hits": 600,
+          "total": 600
+        }
+      ],
+      "verdict": "pass"
+    },
+    {
+      "kind": "success_rate",
+      "description": "Requests finished after a mid-stream failover that completed",
+      "target": "lower bound >= 99%",
+      "window": {
+        "from_s": 0.0,
+        "to_s": null
+      },
+      "measured": "100.00% (882 of 882; 95% interval 99.57% to 100.00%)",
+      "interval": {
+        "hits": 882,
+        "total": 882,
+        "low": 0.9956634917202811,
+        "high": 1.0
+      },
+      "per_seed": [
+        {
+          "seed": 1,
+          "hits": 169,
+          "total": 169
+        },
+        {
+          "seed": 2,
+          "hits": 173,
+          "total": 173
+        },
+        {
+          "seed": 3,
+          "hits": 171,
+          "total": 171
+        },
+        {
+          "seed": 4,
+          "hits": 183,
+          "total": 183
+        },
+        {
+          "seed": 5,
+          "hits": 186,
+          "total": 186
+        }
+      ],
+      "verdict": "pass"
+    },
+    {
+      "kind": "detection_time",
+      "description": "Stall noticed after the last token, stall limit (5 s) plus 1 s",
+      "target": "within 6 s, worst request",
+      "window": {
+        "from_s": 0.0,
+        "to_s": null
+      },
+      "measured": "worst 5.02 s, median 5.00 s, over 882 failovers",
+      "verdict": "pass"
+    }
+  ],
+  "seeds": [
+    {
+      "seed": 1,
+      "started": 1793340820.6704066,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 600,
+        "secondary": 169
+      },
+      "upstream_probes": {
+        "primary": 0,
+        "secondary": 0
+      },
+      "gateway_attempts": 769,
+      "fault_errors": [],
+      "requests": 600,
+      "succeeded": 600,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 0,
+      "with_midstream": 169
+    },
+    {
+      "seed": 2,
+      "started": 1793340945.5784273,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 600,
+        "secondary": 173
+      },
+      "upstream_probes": {
+        "primary": 0,
+        "secondary": 0
+      },
+      "gateway_attempts": 773,
+      "fault_errors": [],
+      "requests": 600,
+      "succeeded": 600,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 0,
+      "with_midstream": 173
+    },
+    {
+      "seed": 3,
+      "started": 1793341071.3529315,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 600,
+        "secondary": 171
+      },
+      "upstream_probes": {
+        "primary": 0,
+        "secondary": 0
+      },
+      "gateway_attempts": 771,
+      "fault_errors": [],
+      "requests": 600,
+      "succeeded": 600,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 0,
+      "with_midstream": 171
+    },
+    {
+      "seed": 4,
+      "started": 1793341197.474733,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 600,
+        "secondary": 183
+      },
+      "upstream_probes": {
+        "primary": 0,
+        "secondary": 0
+      },
+      "gateway_attempts": 783,
+      "fault_errors": [],
+      "requests": 600,
+      "succeeded": 600,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 0,
+      "with_midstream": 183
+    },
+    {
+      "seed": 5,
+      "started": 1793341322.5530398,
+      "observer": true,
+      "upstream_requests": {
+        "primary": 600,
+        "secondary": 186
+      },
+      "upstream_probes": {
+        "primary": 0,
+        "secondary": 0
+      },
+      "gateway_attempts": 786,
+      "fault_errors": [],
+      "requests": 600,
+      "succeeded": 600,
+      "errors": {},
+      "failed_latency_p50_s": null,
+      "failed_latency_max_s": null,
+      "with_failover": 0,
+      "with_midstream": 186
+    }
+  ],
+  "environment": {
+    "date": "2026-10-30 06:24 UTC",
+    "gateway": "http://localhost:8000",
+    "commit": "5df9e15",
+    "host": "Linux x86_64, 2 CPUs",
+    "python": "3.12.3"
+  }
+}
