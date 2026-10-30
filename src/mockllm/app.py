@@ -10,7 +10,9 @@ Faults (``mode``), each optionally limited to one ``model`` and a ``duration_s``
 - ``status``: fail every request: ``{"status": 429, "retry_after": 30}``
 - ``ttft_ms``: wait this long before the first token: ``{"ms": 3000}``
 - ``token_delay_ms``: wait this long between tokens: ``{"ms": 50}``
-- ``cut_after_tokens``: end the stream after N tokens, with no finish and no [DONE]
+- ``cut_after_tokens``: end the stream after N tokens, with no finish and no [DONE];
+  ``{"fraction": [0.2, 0.8], "rate": 0.3}`` cuts 30% of streams at a random 20 to 80% of
+  the answer (also for ``stall_after_tokens``, ``malformed_chunk`` and ``error_event``)
 - ``stall_after_tokens``: stop sending after N tokens but keep the connection open;
   ``{"tokens": 20, "keep_alive_s": 1}`` also sends ``: keep-alive`` comments, as DeepSeek does
 - ``malformed_chunk``: send a broken chunk after N tokens
@@ -306,6 +308,24 @@ def create_mock_app() -> FastAPI:
     return app
 
 
+def _fires_at(state: MockState, params: dict[str, Any] | None, length: int) -> int | None:
+    """The token a mid-stream fault fires at for this request, or None if it doesn't.
+
+    ``tokens`` is a fixed position. ``fraction: [0.2, 0.8]`` picks a random point in that
+    share of the answer, at least one token in, so a one-token probe gets through.
+    ``rate`` fires the fault on only that share of requests. Both draw from the seeded
+    generator, so a scenario seed injects the same faults every run."""
+    if params is None:
+        return None
+    rate = float(params.get("rate", 1))
+    if rate < 1 and state.rng.random() >= rate:
+        return None
+    if "fraction" in params:
+        low, high = (float(x) for x in params["fraction"])
+        return max(1, round(length * state.rng.uniform(low, high)))
+    return int(params.get("tokens", 0))
+
+
 def _stop_flapping(state: MockState) -> None:
     if state.flapper is not None:
         state.flapper.cancel()
@@ -416,26 +436,30 @@ async def _stream(
         }
         return f"data: {json.dumps(payload)}\n\n".encode()
 
-    cut = state.fault("cut_after_tokens", model)
+    cut_params = state.fault("cut_after_tokens", model)
     stall = state.fault("stall_after_tokens", model)
-    malformed = state.fault("malformed_chunk", model)
+    malformed_params = state.fault("malformed_chunk", model)
     error_event = state.fault("error_event", model)
+    cut = _fires_at(state, cut_params, len(pieces))
+    stall_at = _fires_at(state, stall, len(pieces))
+    malformed = _fires_at(state, malformed_params, len(pieces))
+    error_at = _fires_at(state, error_event, len(pieces))
 
     yield chunk({"role": "assistant", "content": ""})
     await asyncio.sleep(ttft_s)
     for i, piece in enumerate(pieces):
-        if cut is not None and i >= int(cut.get("tokens", 0)):
+        if cut is not None and i >= cut:
             return
-        if stall is not None and i >= int(stall.get("tokens", 0)):
+        if stall is not None and stall_at is not None and i >= stall_at:
             keep_alive = stall.get("keep_alive_s")
             while True:
                 await asyncio.sleep(float(keep_alive or 3600))
                 if keep_alive:
                     yield b": keep-alive\n\n"
-        if malformed is not None and i >= int(malformed.get("tokens", 0)):
+        if malformed is not None and i >= malformed:
             yield b"data: {not json\n\n"
             return
-        if error_event is not None and i >= int(error_event.get("tokens", 0)):
+        if error_event is not None and error_at is not None and i >= error_at:
             message = error_event.get("message", "mockllm injected an error event")
             error = {"error": {"message": message, "type": "server_error"}}
             yield f"data: {json.dumps(error)}\n\n".encode()

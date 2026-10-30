@@ -56,7 +56,14 @@ class Result:
     ttft_s: float | None = None  # until the first content, when streaming
     attempts: int | None = None
     failovers: int | None = None
+    midstream: int | None = None  # mid-stream failovers, from Switchyard's summary
+    # Seconds from the last content to Switchyard's failover comment: how long a dead or
+    # stalled stream took to notice. The longest, if there was more than one.
+    detection_s: float | None = None
     served_model: str | None = None
+
+
+FAILOVER_COMMENT = b": switchyard failover"
 
 
 @dataclass
@@ -311,11 +318,16 @@ def _read_body(data: Any, result: Result) -> None:
 async def _read_stream(response: aiohttp.ClientResponse, result: Result, sent: float) -> None:
     done = False
     buffer = b""
+    last_content = sent
     async for chunk in response.content.iter_any():
         buffer += chunk
         while b"\n\n" in buffer:
             block, buffer = buffer.split(b"\n\n", 1)
             for line in block.split(b"\n"):
+                if line.startswith(FAILOVER_COMMENT):
+                    gap = round(time.monotonic() - last_content, 4)
+                    result.detection_s = max(gap, result.detection_s or 0.0)
+                    continue
                 if not line.startswith(b"data: "):
                     continue
                 payload = line[6:]
@@ -329,8 +341,10 @@ async def _read_stream(response: aiohttp.ClientResponse, result: Result, sent: f
                     continue
                 for choice in data.get("choices") or []:
                     delta = choice.get("delta") or {}
-                    if result.ttft_s is None and (delta.get("content") or delta.get("tool_calls")):
-                        result.ttft_s = round(time.monotonic() - sent, 4)
+                    if delta.get("content") or delta.get("tool_calls"):
+                        last_content = time.monotonic()
+                        if result.ttft_s is None:
+                            result.ttft_s = round(last_content - sent, 4)
                     if choice.get("finish_reason"):
                         result.finish_reason = choice["finish_reason"]
                 _read_summary(data, result)
@@ -342,6 +356,7 @@ def _read_summary(data: dict[str, Any], result: Result) -> None:
     if isinstance(summary, dict):
         result.attempts = summary.get("attempts")
         result.failovers = summary.get("failovers")
+        result.midstream = summary.get("midstream_failovers")
         result.served_model = summary.get("served_model")
 
 

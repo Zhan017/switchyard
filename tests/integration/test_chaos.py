@@ -157,3 +157,30 @@ def test_usage_errors_exit_2(tmp_path: Path) -> None:
     bad.write_text("id: X\n")
     assert main(["run", str(bad)]) == 2
     assert main(["nonsense"]) == 2
+
+
+async def test_cut_streams_are_finished_mid_stream(stack: Target, tmp_path: Path) -> None:
+    s5 = scenario(
+        traffic={"model": "mock", "rate_rps": 10, "duration_s": 6, "stream_share": 1.0},
+        faults=[
+            {
+                "upstream": "primary",
+                "mode": "stall_after_tokens",
+                "params": {"fraction": [0.2, 0.8], "rate": 0.5, "keep_alive_s": 0.2},
+                "start_s": 0,
+                "duration_s": 6,
+            }
+        ],
+        checks=[
+            {"kind": "success_rate", "description": "ok", "min": 0.9},
+            {"kind": "success_rate", "description": "mid", "min": 0.9, "only": "midstream"},
+            # The test route's stall limit is 1 s.
+            {"kind": "detection_time", "description": "noticed", "max_s": 2},
+        ],
+    )
+    summary = await run_scenario(s5, stack, [1], tmp_path, quiet=True)
+    checks = {c["description"]: c for c in summary["checks"]}
+    assert checks["ok"]["interval"]["hits"] == 60  # every request completed
+    assert checks["mid"]["interval"]["total"] > 5  # and some were continued mid-stream
+    assert checks["noticed"]["verdict"] == "pass"
+    assert summary["seeds"][0]["with_midstream"] == checks["mid"]["interval"]["total"]

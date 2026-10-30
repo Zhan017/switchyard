@@ -1,0 +1,36 @@
+id: S6
+title: The primary stops sending tokens partway through the answer
+release: v0.1
+description: >-
+  For the whole run, 30% of the first model's streams stop sending tokens at a random 20
+  to 80% of the answer and keep the connection open, sending a keep-alive comment every
+  second as DeepSeek does while queued. Keep-alives aren't content, so the 5 s stall limit
+  should still fire, and Switchyard should finish the answer on the second model. Every
+  request streams, and 30% stays under the breaker's 40% rule, as in S5.
+topology:
+  gateway: Switchyard, route group `mock` (mock-a/mock first, then mock-b/mock)
+  primary: mockllm behind a gate, serving mock-a/mock
+  secondary: mockllm behind a gate, serving mock-b/mock
+traffic:
+  model: mock
+  rate_rps: 5
+  duration_s: 120
+  stream_share: 1.0
+seeds: [1, 2, 3, 4, 5]
+faults:
+  - upstream: primary
+    mode: stall_after_tokens
+    params: { fraction: [0.2, 0.8], rate: 0.3, keep_alive_s: 1 }
+    start_s: 0
+    duration_s: 120
+checks:
+  - kind: success_rate
+    description: Requests that completed
+    min: 0.99
+  - kind: success_rate
+    description: Requests finished after a mid-stream failover that completed
+    min: 0.99
+    only: midstream
+  - kind: detection_time
+    description: Stall noticed after the last token, stall limit (5 s) plus 1 s
+    max_s: 6

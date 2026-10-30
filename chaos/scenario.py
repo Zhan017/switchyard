@@ -59,6 +59,7 @@ CheckKind = Literal[
     "breaker_closes",  # and closes within max_s of the last fault ending
     "attempt_ratio",  # upstream attempts (probes excluded) per client request <= max
     "recovery",  # the last failed request arrives within max_s of the last fault ending
+    "detection_time",  # a dead or stalled stream is noticed within max_s, worst request
 ]
 
 
@@ -70,6 +71,9 @@ class Check(_Strict):
     max_s: float | None = Field(default=None, gt=0)
     model: str | None = None  # provider/model, for breaker checks
     window: Window = Field(default_factory=Window)
+    # "midstream": only requests Switchyard finished after a mid-stream failover. Needs
+    # Switchyard's summary; against another gateway the check is "n/a".
+    only: Literal["all", "midstream"] = "all"
 
     @model_validator(mode="after")
     def _fields_for_kind(self) -> Check:
@@ -80,6 +84,7 @@ class Check(_Strict):
             "breaker_closes": ("model", "max_s"),
             "attempt_ratio": ("max",),
             "recovery": ("max_s",),
+            "detection_time": ("max_s",),
         }
         missing = [f for f in needs[self.kind] if getattr(self, f) is None]
         if missing:
@@ -97,6 +102,8 @@ class Check(_Strict):
             return f"<= {self.max:g}x requests"
         if self.kind == "breaker_opens":
             return "opens" if self.max_s is None else f"within {self.max_s:g} s"
+        if self.kind == "detection_time":
+            return f"within {self.max_s:g} s, worst request"
         return f"within {self.max_s:g} s"
 
 

@@ -20,6 +20,8 @@ ORDER: dict[Verdict, int] = {"fail": 0, "inconclusive": 1, "pass": 2, "n/a": 3}
 
 def in_window(scenario: Scenario, check: Check, result: Result) -> bool:
     end = check.window.to_s if check.window.to_s is not None else scenario.traffic.duration_s
+    if check.only == "midstream" and not result.midstream:
+        return False
     return check.window.from_s <= result.at_s < end
 
 
@@ -39,6 +41,32 @@ def evaluate_check(scenario: Scenario, check: Check, runs: list[SeedRun]) -> dic
         "target": check.target,
         "window": check.window.model_dump(),
     }
+    if check.only == "midstream" and not any(
+        r.midstream is not None for run in runs for r in run.results
+    ):
+        out.update(measured="no mid-stream counts: not Switchyard", verdict="n/a")
+        return out
+    if check.kind == "detection_time":
+        assert check.max_s is not None
+        gaps = [
+            (r.detection_s, run.seed)
+            for run in runs
+            for r in run.results
+            if r.detection_s is not None and in_window(scenario, check, r)
+        ]
+        if not gaps:
+            out.update(
+                measured="no failover comments: not Switchyard, or no failures", verdict="n/a"
+            )
+            return out
+        worst = max(g for g, _ in gaps)
+        values = sorted(g for g, _ in gaps)
+        median = values[len(values) // 2]
+        out.update(
+            measured=f"worst {worst:.2f} s, median {median:.2f} s, over {len(gaps)} failovers",
+            verdict="pass" if worst <= check.max_s else "fail",
+        )
+        return out
     if check.kind in ("success_rate", "fast_failure"):
         hits = total = 0
         per_seed = []
@@ -172,6 +200,7 @@ def _seed_summary(scenario: Scenario, run: SeedRun) -> dict[str, Any]:
         "failed_latency_p50_s": _pct(failed_latency, 50),
         "failed_latency_max_s": failed_latency[-1] if failed_latency else None,
         "with_failover": sum(1 for r in results if (r.failovers or 0) > 0),
+        "with_midstream": sum(1 for r in results if (r.midstream or 0) > 0),
     }
 
 
@@ -212,9 +241,10 @@ def markdown(summary: dict[str, Any], environment: dict[str, Any]) -> str:
         "",
         "## Per seed",
         "",
-        "| Seed | Requests | Succeeded | Attempts seen by the mocks | Attempts counted by the "
-        "gateway | Probes seen by the mocks | Failed requests: p50, max latency | Errors |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Seed | Requests | Succeeded | Mid-stream failovers | Attempts seen by the mocks "
+        "| Attempts counted by the gateway | Probes seen by the mocks "
+        "| Failed requests: p50, max latency | Errors |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for seed in seeds:
         attempts = sum(seed["upstream_requests"].values())
@@ -226,7 +256,8 @@ def markdown(summary: dict[str, Any], environment: dict[str, Any]) -> str:
         by_gateway = seed.get("gateway_attempts")
         gateway = "n/a" if by_gateway is None else str(by_gateway)
         lines.append(
-            f"| {seed['seed']} | {seed['requests']} | {seed['succeeded']} | {attempts} "
+            f"| {seed['seed']} | {seed['requests']} | {seed['succeeded']} "
+            f"| {seed.get('with_midstream', 0)} | {attempts} "
             f"| {gateway} | {probes} | {latency} | {errors} |"
         )
     traffic = scenario.traffic

@@ -1,0 +1,35 @@
+id: S5
+title: The primary's stream is cut partway through the answer
+release: v0.1
+description: >-
+  For the whole run, 30% of the first model's streams end without warning at a random 20
+  to 80% of the answer, after the client has started reading it. Switchyard should finish
+  each one on the second model in the same stream (mid-stream failover, spec 7.6). Every
+  request streams, since only streamed answers are continued; a cut non-streamed answer is
+  an ordinary failover. 30% stays under the breaker's 40% rule, so most requests still
+  reach the primary and hundreds of them are continued; a run of 5 cuts in a row can still
+  open the breaker for a while.
+topology:
+  gateway: Switchyard, route group `mock` (mock-a/mock first, then mock-b/mock)
+  primary: mockllm behind a gate, serving mock-a/mock
+  secondary: mockllm behind a gate, serving mock-b/mock
+traffic:
+  model: mock
+  rate_rps: 5
+  duration_s: 120
+  stream_share: 1.0
+seeds: [1, 2, 3, 4, 5]
+faults:
+  - upstream: primary
+    mode: cut_after_tokens
+    params: { fraction: [0.2, 0.8], rate: 0.3 }
+    start_s: 0
+    duration_s: 120
+checks:
+  - kind: success_rate
+    description: Requests that completed
+    min: 0.99
+  - kind: success_rate
+    description: Requests finished after a mid-stream failover that completed
+    min: 0.99
+    only: midstream
