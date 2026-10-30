@@ -197,7 +197,8 @@ def test_relay_error_mid_stream() -> None:
         [TextDelta("Part"), ProviderError(ErrorKind.SERVER_ERROR, "boom")]
     )
     assert chunks[-2] == {
-        "error": {"message": "boom", "type": "switchyard_error", "code": "no_healthy_provider"}
+        "error": {"message": "boom", "type": "switchyard_error", "code": "no_healthy_provider"},
+        "switchyard": {"cost_usd": 0},  # the summary from finalize, as on success
     }
     assert chunks[-1] == "[DONE]"
     assert result.text == "Part" and result.first_byte_at is not None

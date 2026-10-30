@@ -357,7 +357,8 @@ class Relay:
                 result.aborted = True
             summary = self._finalize_once()
         if result.error is not None:
-            yield sse(error_json(result.error))
+            # The summary goes with the error too, so a client can see what was tried.
+            yield sse({**error_json(result.error), "switchyard": summary})
             yield DONE
             return
         if result.recovered_from is not None:

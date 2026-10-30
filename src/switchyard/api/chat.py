@@ -283,6 +283,7 @@ def _account(
     tenant, feature = ctx.tenant.name, ctx.feature
     total_s = time.monotonic() - ctx.received
     total_cost = 0.0
+    attempt_costs: list[float] = []
     attempt_rows = []
     previous: Attempt | None = None
     for attempt in attempts:
@@ -290,6 +291,7 @@ def _account(
         usage = attempt.usage
         cost = call.state.prices.cost(attempt.key, usage) or 0.0
         total_cost += cost
+        attempt_costs.append(cost)
         estimated = "true" if usage.estimated else "false"
         cost_class = "served" if attempt.delivered else "wasted"
         outcome = attempt.outcome if attempt.outcome != "pending" else "client_closed"
@@ -361,6 +363,27 @@ def _account(
         "strategy": last_failover.strategy if last_failover else None,
         "cost_usd": round(total_cost, 8),
         "usage_estimated": usage.estimated,
+        "seam": (
+            {
+                "actions": list(last_failover.seam_actions),
+                "latency_ms": _ms(last_failover.seam_latency_s),
+            }
+            if last_failover and last_failover.seam_actions
+            else None
+        ),
+        "not_continued": continuer.refusal if continuer and continuer.refusal else None,
+        # Each upstream call, so a client can see what a failover cost.
+        "trail": [
+            {
+                "model": a.key,
+                "role": a.role,
+                "outcome": a.outcome if a.outcome != "pending" else "client_closed",
+                "input_tokens": a.usage.input_tokens,
+                "output_tokens": a.usage.output_tokens,
+                "cost_usd": round(cost, 8),
+            }
+            for a, cost in zip(attempts, attempt_costs, strict=True)
+        ],
     }
     log_request(
         {
@@ -380,15 +403,6 @@ def _account(
                 for a in attempts
             ],
             "skipped": [f"{k} ({r})" for k, r in call.runner.skipped] or None,
-            "seam": (
-                {
-                    "actions": list(last_failover.seam_actions),
-                    "latency_ms": _ms(last_failover.seam_latency_s),
-                }
-                if last_failover and last_failover.seam_actions
-                else None
-            ),
-            "not_continued": continuer.refusal if continuer and continuer.refusal else None,
         }
     )
     records = services.records

@@ -68,6 +68,14 @@ async def test_a_broken_stream_is_finished_on_the_next_model(
     assert summary["midstream_failovers"] == 1
     assert summary["strategy"] == "instructed_repair"
     assert summary["served_model"] == "mock/mock-b"
+    assert summary["seam"]["actions"] and summary["seam"]["latency_ms"] is not None
+    assert summary["not_continued"] is None
+    trail = summary["trail"]
+    assert [(t["model"], t["role"], t["outcome"]) for t in trail] == [
+        ("mock/mock-a", "primary", kind),
+        ("mock/mock-b", "midstream", "ok"),
+    ]
+    assert trail[1]["output_tokens"] > 0
     # Usage covers both attempts: the continuation re-sends the prompt and partial answer.
     usage = events[-2]["usage"]
     assert usage["completion_tokens"] >= 5 + 1
@@ -104,6 +112,7 @@ async def test_a_request_with_stop_sequences_is_not_continued(
     response = await client.post("/v1/chat/completions", json=chat(stream=True, stop=["END"]))
     events = data(frames(response))
     assert events[-2]["error"]["code"] == "no_healthy_provider"
+    assert events[-2]["switchyard"]["not_continued"] == "stop_sequences"
     assert len(content_of(events).split()) == 5
 
 
