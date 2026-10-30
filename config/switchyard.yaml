@@ -35,7 +35,7 @@ models:
       reasoning_effort: none
   deepseek/deepseek-flash:
     json_schema: false # json_object only
-    continuation: native # beta prefix completion
+    continuation: native # beta prefix completion; the seam evaluation decides
     request_overrides:
       thinking: { type: disabled }
   mock-a/mock: {}

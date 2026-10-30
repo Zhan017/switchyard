@@ -114,7 +114,9 @@ class AnthropicAdapter(Adapter):
         return deep_merge(body, options.request_overrides)
 
     async def complete(self, model: str, options: ModelConfig, request: ChatRequest) -> Completion:
-        data = await self.post_json(self.url(), self.body(model, options, request, stream=False))
+        data = await self.post_json(
+            self.url_for(request), self.body(model, options, request, stream=False)
+        )
         if data.get("type") == "error":
             raise event_error(data)
         text: list[str] = []
@@ -144,7 +146,7 @@ class AnthropicAdapter(Adapter):
         tool_index: dict[int, int] = {}  # Anthropic block index -> OpenAI tool call index
         totals: dict[str, Any] = {}
         finished = False
-        async with self.open_stream(self.url(), body) as events:
+        async with self.open_stream(self.url_for(request), body) as events:
             async for sse in events:
                 event = parse_json(sse.data)
                 kind = event.get("type") or sse.event

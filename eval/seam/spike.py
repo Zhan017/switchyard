@@ -38,25 +38,10 @@ from eval.seam.fake import FakeClient
 from eval.seam.metrics import approx_tokens, repeated_span
 from eval.seam.records import Join, Prompt, Reference
 from eval.seam.report import write_outputs
+from switchyard.streaming.continuation import ANCHOR_EXTRA_TOKENS, ANCHORED, INSTRUCTION
 from switchyard.streaming.seam import has_preface, is_meta_reply, repair
 
 HERE = Path(__file__).parent
-INSTRUCTION = (
-    "Your previous message was cut off. Continue from exactly where it stopped. "
-    "The last characters were: «{tail}». Output only the continuation."
-)
-# The partial answer is quoted rather than presented as the model's own turn. In the first
-# run, Claude refused 6 of 30 continuations of GPT's text, saying it had no record of
-# writing it. Copying the last words gives seam repair an exact point to cut at.
-ANCHORED = (
-    "{prompt}\n\n---\n"
-    "An earlier answer to this request was cut off partway through. Here it is:\n"
-    "<partial_answer>\n{partial}\n</partial_answer>\n\n"
-    "Continue that answer from exactly where it stops, keeping its style and formatting. "
-    "Start your reply by copying the last few words of the partial answer exactly, then "
-    "keep going. Output only the continuation, with no preface or comments."
-)
-ANCHOR_EXTRA_TOKENS = 40
 # A rough stand-in for token boundaries: a word with its leading space, long words split
 # in two, punctuation on its own. Streams die between tokens, so cuts land on these.
 _PIECE = re.compile(r"\s*(?:\w{1,8}|[^\w\s])")

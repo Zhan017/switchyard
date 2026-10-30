@@ -48,7 +48,11 @@ class ModelConfig(_Strict):
     json_schema: bool = True
     # The newest Claude models reject temperature and top_p; the adapter drops them.
     sampling_params: bool = True
-    continuation: Literal["native", "instructed", "none"] = "instructed"
+    # How this model finishes an answer another model started and lost mid-stream (spec
+    # 7.6). The seam evaluation decides each model's value.
+    continuation: Literal[
+        "error", "restart", "native", "instructed", "instructed_repair", "anchored"
+    ] = "instructed_repair"
     # Output tokens an open breaker's probe asks for. GPT-6 Luna rejects fewer than 3.
     probe_max_tokens: int = Field(default=1, gt=0)
     # Merged into every request body for this model, for example to turn thinking off.
@@ -90,6 +94,8 @@ class Resilience(_Strict):
     retry_cap_s: float = Field(default=2.0, ge=0)
     cooldown_default_s: float = Field(default=10.0, gt=0)  # a 429 without Retry-After
     auth_cooldown_s: float = Field(default=60.0, gt=0)  # a 401 or 403 from the provider
+    max_midstream_failovers: int = Field(default=2, ge=0)  # continuation attempts per request
+    heartbeat_s: float = Field(default=3.0, gt=0)  # SSE comments while a continuation starts
     shared_sync_s: float = Field(default=0.5, gt=0)  # how often replicas sync through Redis
 
 
@@ -118,7 +124,15 @@ class Settings(_Strict):
                 raise ValueError(f"model '{key}' uses unknown provider '{provider}'")
             # JSON modes a provider type never supports default to off, so requests that
             # need them are routed elsewhere instead of being sent and rejected.
-            unsupported = UNSUPPORTED_BY_TYPE[self.providers[provider].type]
+            provider_type = self.providers[provider].type
+            if options.continuation == "native" and provider_type != "deepseek":
+                # Claude 4.6 and later reject a trailing assistant message, and OpenAI has
+                # no documented continuation: the model may start a new reply.
+                raise ValueError(
+                    f"model '{key}': native continuation needs a deepseek provider, "
+                    f"not {provider_type}"
+                )
+            unsupported = UNSUPPORTED_BY_TYPE[provider_type]
             defaults = {flag: False for flag in unsupported if flag not in options.model_fields_set}
             if defaults:
                 self.models[key] = options.model_copy(update=defaults)

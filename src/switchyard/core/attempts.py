@@ -56,7 +56,7 @@ RETRY_KINDS = frozenset({ErrorKind.CONNECTION, ErrorKind.TIMEOUT, ErrorKind.SERV
 FAILOVER_KINDS = RETRYABLE | {ErrorKind.RATE_LIMITED, ErrorKind.AUTH}
 
 Mode = Literal["stream", "buffered"]
-Role = Literal["primary", "retry", "failover"]
+Role = Literal["primary", "retry", "failover", "midstream"]
 
 
 @dataclass
@@ -72,6 +72,11 @@ class Attempt:
     error: ProviderError | None = None
     usage: Usage = NO_USAGE
     delivered: bool = False  # did any of the answer reach the client
+    # Set on mid-stream continuations: the request actually sent (prompt plus partial
+    # answer), the strategy, and how much of the answer the client had before it.
+    request: ChatRequest | None = None
+    strategy: str | None = None
+    emitted_chars_before: int = 0
 
     @property
     def key(self) -> str:
@@ -187,6 +192,36 @@ class Runner:
         assert last_error is not None
         raise self._exhausted(last_error)
 
+    async def try_midstream(
+        self, candidate: Candidate, request: ChatRequest, strategy: str, emitted_chars: int
+    ) -> Opened:
+        """One attempt to continue an answer the client is already reading (spec 7.6): no
+        same-provider retry, and the caller decides whether to try another candidate.
+        Raises ProviderError when the attempt fails before its first content."""
+        attempt = Attempt(
+            len(self.attempts) + 1,
+            "midstream",
+            candidate,
+            request=request,
+            strategy=strategy,
+            emitted_chars_before=emitted_chars,
+        )
+        self.attempts.append(attempt)
+        self.breakers.note_attempt(candidate.key, retry=False)
+        try:
+            return await self._try(attempt)
+        except ProviderError as error:
+            if error.kind == ErrorKind.RATE_LIMITED:
+                self.breakers.cool_down(candidate.key, error.retry_after, "rate_limited")
+            elif error.kind == ErrorKind.AUTH:
+                self.breakers.cool_down(candidate.key, None, "auth")
+            raise
+
+    def settle(self, attempt: Attempt, reported: Usage | None, output: str) -> None:
+        """Usage for an attempt that sent output: what the provider reported, completed
+        by estimates where it reported nothing."""
+        attempt.usage = complete_usage(reported, attempt.request or self.request, output)
+
     def _may_retry(self, candidate: Candidate, error: ProviderError) -> bool:
         return (
             error.kind in RETRY_KINDS
@@ -203,10 +238,11 @@ class Runner:
 
     async def _try(self, attempt: Attempt) -> Opened:
         candidate = attempt.candidate
+        request = attempt.request or self.request
         adapter = self.adapters[candidate.provider]
         timing = StreamTiming()
         events = watch(
-            adapter.stream(candidate.model, candidate.options, self.request),
+            adapter.stream(candidate.model, candidate.options, request),
             ttft_s=self.limits.ttft_timeout_s,
             stall_s=self.limits.stall_timeout_s,
             deadline=self.deadline,
@@ -227,7 +263,7 @@ class Runner:
                     if _visible(event, tool_starts):
                         self._first_token(attempt, timing)
                         return Opened(attempt, buffer, events, timing, self.attempts, None)
-            if self.mode == "buffered" and self.request.wants_json:
+            if self.mode == "buffered" and request.wants_json:
                 text = "".join(e.text for e in buffer if isinstance(e, TextDelta))
                 check_json(text, _finish(buffer), any(isinstance(e, RefusalDelta) for e in buffer))
         except ProviderError as error:
@@ -242,7 +278,7 @@ class Runner:
         self._first_token(attempt, timing)
         if self.mode == "buffered":
             attempt.ended = time.monotonic()
-            attempt.usage = complete_usage(_reported(buffer), self.request, _output(buffer))
+            self.settle(attempt, _reported(buffer), _output(buffer))
             self.finish(attempt, _health_outcome(buffer))
             return Opened(attempt, buffer, _nothing(), timing, self.attempts, buffer)
         return Opened(attempt, buffer, _nothing(), timing, self.attempts, None)
@@ -270,12 +306,13 @@ class Runner:
         # Output the provider generated before failing is billed; nothing before that is.
         output = _output(buffer)
         if output or _reported(buffer) is not None:
-            attempt.usage = complete_usage(_reported(buffer), self.request, output)
+            self.settle(attempt, _reported(buffer), output)
         self.breakers.record_outcome(attempt.key, attempt.outcome)
 
     def finish(self, attempt: Attempt, outcome: str) -> None:
-        """Record how a committed attempt ended. A client that left says nothing about
-        the provider, so it isn't counted."""
+        """Record how a committed attempt ended. A client that left, or a model that
+        talked about the task instead of continuing it ("meta_reply"), says nothing about
+        the provider's health, so the breaker doesn't count it."""
         attempt.outcome = outcome
         if attempt.ended is None:
             attempt.ended = time.monotonic()

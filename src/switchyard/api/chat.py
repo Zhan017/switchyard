@@ -20,7 +20,6 @@ import orjson
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.types import Receive, Scope, Send
 
-from switchyard.accounting.usage import complete_usage
 from switchyard.api.errors import error_response
 from switchyard.api.schemas import parse_body, to_chat_request
 from switchyard.api.state import GatewayState, Services
@@ -34,6 +33,7 @@ from switchyard.core.attempts import (
     assemble,
     health_outcome,
 )
+from switchyard.core.midstream import Continuer
 from switchyard.core.router import Route, capable_candidates, resolve
 from switchyard.core.types import ChatRequest, StreamEvent, Usage
 from switchyard.observability.logging import log_request
@@ -189,13 +189,16 @@ def _complete(call: Call, opened: Opened) -> JSONResponse:
 
 
 def _stream(call: Call, opened: Opened) -> RelayResponse:
-    attempt = opened.attempt
+    first = opened.attempt
+    # A buffered answer (JSON) is never continued: nothing reaches the client before it
+    # is complete, so a failure there is an ordinary failover.
+    continuer = None
+    if opened.collected is None:
+        continuer = Continuer(call.runner, list(call.runner.candidates), call.request, first)
 
     def finalize(result: StreamResult) -> dict[str, Any]:
         call.services.metrics.in_flight.dec()
         output = result.text + "".join(c.name + c.arguments for c in result.tool_calls)
-        attempt.usage = complete_usage(result.usage, call.request, output)
-        attempt.delivered = result.first_byte_at is not None
         if result.error is not None:
             status, outcome = error_code(result.error)[0], result.error.kind.value
         elif result.aborted:
@@ -205,26 +208,38 @@ def _stream(call: Call, opened: Opened) -> RelayResponse:
         else:
             status = "ok"
             outcome = health_outcome(result.finish_reason, bool(result.refusal))
-        if opened.collected is None:  # a buffered attempt was recorded when it committed
-            call.runner.finish(attempt, outcome)
-        elif outcome == "client_closed":
-            attempt.outcome = outcome
+        if continuer is None:
+            # A buffered attempt was settled and recorded when it committed.
+            first.delivered = result.first_byte_at is not None
+            if outcome == "client_closed":
+                first.outcome = outcome
+            served = first
+        else:
+            served = continuer.current
+            if served.outcome == "pending":  # else a failed resume already recorded it
+                call.runner.settle(served, result.usage, result.segment_text)
+                if served.role == "midstream":
+                    served.delivered = bool(result.segment_text)
+                else:
+                    served.delivered = result.first_byte_at is not None
+                call.runner.finish(served, outcome)
         overhead = None
         # Only meaningful when nothing was retried and the first chunk follows the first
         # upstream token, which is not the case for a buffered JSON answer.
         ttft = opened.timing.ttft_s
-        if attempt.n == 1 and opened.collected is None and result.started_at and ttft:
+        if first.n == 1 and continuer is not None and result.started_at and ttft:
             overhead = (result.started_at - call.ctx.received) - ttft
         result.usage = _total_usage(opened.attempts)
         error = result.error or result.recovered_from
         return _account(
             call,
             opened.attempts,
-            served=attempt,
+            served=served,
             status=status,
             error_message=error.message if error else None,
             overhead=(overhead, "stream"),
             response_chars=len(output),
+            continuer=continuer,
         )
 
     relay = Relay(
@@ -232,6 +247,8 @@ def _stream(call: Call, opened: Opened) -> RelayResponse:
         alias=call.route.alias,
         request=call.request,
         finalize=finalize,
+        resume=continuer.resume if continuer is not None else None,
+        heartbeat_s=call.services.breakers.policy.heartbeat_s,
     )
     headers = {
         "x-request-id": call.ctx.request_id,
@@ -257,6 +274,7 @@ def _account(
     error_message: str | None,
     overhead: tuple[float | None, str] = (None, ""),
     response_chars: int | None = None,
+    continuer: Continuer | None = None,
 ) -> dict[str, Any]:
     """Metrics, cost, the log line and the Postgres record for one finished request.
     Returns the summary sent to the client in the ``switchyard`` object."""
@@ -309,11 +327,19 @@ def _account(
                 else usage.input_tokens + usage.output_tokens,
                 "cost_usd": cost,
                 "usage_estimated": usage.estimated,
-                "emitted_chars_before": 0,
+                "emitted_chars_before": attempt.emitted_chars_before,
             }
         )
     for key, reason in call.runner.skipped:
         metrics.skipped.labels(key, reason).inc()
+    midstream = continuer.failovers if continuer is not None else []
+    for failover in midstream:
+        metrics.failovers.labels(
+            failover.from_key, failover.to_key, "midstream", failover.strategy
+        ).inc()
+        for action in failover.seam_actions:
+            metrics.seam_repair.labels(action).inc()
+    last_failover = midstream[-1] if midstream else None
 
     last = served or (attempts[-1] if attempts else None)
     provider_label = last.candidate.provider if last else "none"
@@ -331,8 +357,8 @@ def _account(
         "served_model": served.key if served else None,
         "attempts": len(attempts),
         "failovers": failovers,
-        "midstream_failovers": 0,
-        "strategy": None,
+        "midstream_failovers": len(midstream),
+        "strategy": last_failover.strategy if last_failover else None,
         "cost_usd": round(total_cost, 8),
         "usage_estimated": usage.estimated,
     }
@@ -354,6 +380,15 @@ def _account(
                 for a in attempts
             ],
             "skipped": [f"{k} ({r})" for k, r in call.runner.skipped] or None,
+            "seam": (
+                {
+                    "actions": list(last_failover.seam_actions),
+                    "latency_ms": _ms(last_failover.seam_latency_s),
+                }
+                if last_failover and last_failover.seam_actions
+                else None
+            ),
+            "not_continued": continuer.refusal if continuer and continuer.refusal else None,
         }
     )
     records = services.records
@@ -371,15 +406,15 @@ def _account(
                 "total_ms": _ms(total_s),
                 "served_provider": served.candidate.provider if served else None,
                 "served_model": served.candidate.model if served else None,
-                "strategy": None,
+                "strategy": last_failover.strategy if last_failover else None,
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
                 "cost_usd": total_cost,
                 "usage_estimated": usage.estimated,
                 "failovers": failovers,
-                "midstream_failovers": 0,
-                "seam_latency_ms": None,
-                "seam_action": None,
+                "midstream_failovers": len(midstream),
+                "seam_latency_ms": _ms(last_failover.seam_latency_s) if last_failover else None,
+                "seam_action": ",".join(last_failover.seam_actions) if last_failover else None,
                 "prompt_hash": call.prompt_hash,
                 "prompt_chars": sum(len(m.content or "") for m in call.request.messages),
                 "response_chars": response_chars,

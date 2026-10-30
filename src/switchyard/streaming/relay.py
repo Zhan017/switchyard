@@ -7,17 +7,24 @@ Rules from the spec (7.6) that apply from the first version on:
 - Tool calls are forwarded only once each call is complete, so a failover never has to
   take back half a call.
 - JSON answers are buffered and sent only when complete and valid.
-- An error after the stream started is sent as one ``data: {"error": ...}`` event and
-  ``data: [DONE]``, which the official OpenAI SDKs raise as an error.
+- When the provider dies after text went out, a continuer may finish the answer on
+  another model (spec 7.6). The client sees a ``: switchyard failover`` comment, a
+  ``: heartbeat`` comment every few seconds while the continuation starts, then more text
+  in the same stream.
+- Otherwise an error after the stream started is sent as one ``data: {"error": ...}``
+  event and ``data: [DONE]``, which the official OpenAI SDKs raise as an error.
 - The last chunk carries ``usage`` and a ``switchyard`` summary.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
 import time
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import orjson
 
@@ -36,6 +43,30 @@ from switchyard.core.types import (
 )
 from switchyard.providers.errors import ErrorKind, ProviderError
 
+log = logging.getLogger("switchyard.relay")
+HEARTBEAT = b": heartbeat\n\n"
+
+
+@dataclass
+class Segment:
+    """What one attempt produced: its output, and the usage it reported."""
+
+    text: str
+    usage: Usage | None
+
+
+class Continuation(Protocol):
+    """A continuation on another model, ready to forward."""
+
+    head: list[StreamEvent]
+    events: AsyncIterator[StreamEvent]
+
+    @property
+    def comment(self) -> str: ...
+
+
+Resume = Callable[[ProviderError, str, Segment], Awaitable[Continuation | None]]
+
 
 @dataclass
 class StreamResult:
@@ -53,6 +84,8 @@ class StreamResult:
     aborted: bool = False  # the client went away, or the gateway itself failed
     started_at: float | None = None  # time.monotonic() when the first chunk went out
     first_byte_at: float | None = None  # time.monotonic() when content first went out
+    segment_text: str = ""  # output of the last attempt, for its usage
+    midstream: int = 0  # continuations forwarded after a mid-stream failure
 
 
 def sse(data: dict[str, Any]) -> bytes:
@@ -108,13 +141,21 @@ class Relay:
         alias: str,
         request: ChatRequest,
         finalize: Callable[[StreamResult], dict[str, Any]],
+        resume: Resume | None = None,
+        heartbeat_s: float = 3.0,
     ) -> None:
         """``finalize`` runs once the provider's stream ends, with or without an error. It
-        does the accounting and returns the ``switchyard`` summary for the last chunk."""
+        does the accounting and returns the ``switchyard`` summary for the last chunk.
+        ``resume`` is called when the provider dies after text went out, with the error,
+        everything the client has received and what the failed attempt produced; it
+        returns a continuation to forward, or None to end with the error event."""
         self.response_id = response_id
         self.alias = alias
         self.request = request
         self.finalize = finalize
+        self.resume = resume
+        self.heartbeat_s = heartbeat_s
+        self._current: AsyncIterator[StreamEvent] | None = None
         self.created = int(time.time())
         self.result = StreamResult()
         self._summary: dict[str, Any] | None = None
@@ -148,9 +189,23 @@ class Relay:
         if self._summary is None:
             self.result.aborted = True
             self._finalize_once()
-        aclose = getattr(events, "aclose", None)
-        if aclose is not None:
-            await aclose()
+        for stream in {id(events): events, id(self._current): self._current}.values():
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
+    async def _resume(
+        self, error: ProviderError, emitted: str, failed: Segment
+    ) -> Continuation | None:
+        assert self.resume is not None
+        try:
+            return await self.resume(error, emitted, failed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A bug in failover must not hang or crash the stream: end it with the error.
+            log.exception("mid-stream failover failed")
+            return None
 
     async def run(
         self, events: AsyncIterator[StreamEvent], head: Sequence[StreamEvent] = ()
@@ -187,41 +242,91 @@ class Relay:
                 )
             return self.chunk({"tool_calls": out})
 
+        segment: list[str] = []  # output of the current attempt, for its usage
+
+        def can_continue() -> bool:
+            partial_call = any(i not in flushed for i in calls)
+            return (
+                self.resume is not None
+                and not buffer_text
+                and not result.refusal
+                and not partial_call
+                and bool("".join(text))
+            )
+
         try:
             result.started_at = time.monotonic()
             yield self.chunk({"role": "assistant", "content": ""})
-            while True:
-                if pending:
-                    event = pending.pop()
-                else:
-                    try:
-                        event = await anext(iterator)
-                    except StopAsyncIteration:
-                        break
-                if isinstance(event, TextDelta):
-                    text.append(event.text)
-                    if not buffer_text:
-                        self._sent()
-                        yield self.chunk({"content": event.text})
-                elif isinstance(event, RefusalDelta):
-                    result.refusal += event.text
-                    self._sent()
-                    yield self.chunk({"refusal": event.text})
-                elif isinstance(event, ToolCallStart):
-                    # A new call starting means every earlier call is complete.
-                    ready = flush_calls(before=event.index)
-                    if ready:
-                        self._sent()
-                        yield ready
-                    calls[event.index] = [event.id, event.name, ""]
-                elif isinstance(event, ToolCallArgs):
-                    if event.index in calls:
-                        calls[event.index][2] += event.delta
-                elif isinstance(event, Finish):
-                    result.finish_reason = event.reason
-                elif isinstance(event, UsageReport):
-                    result.usage = event.usage
+            while True:  # one pass per attempt; a mid-stream failover starts another
+                try:
+                    while True:
+                        if pending:
+                            event = pending.pop()
+                        else:
+                            try:
+                                event = await anext(iterator)
+                            except StopAsyncIteration:
+                                break
+                        if isinstance(event, TextDelta):
+                            text.append(event.text)
+                            segment.append(event.text)
+                            if not buffer_text:
+                                self._sent()
+                                yield self.chunk({"content": event.text})
+                        elif isinstance(event, RefusalDelta):
+                            result.refusal += event.text
+                            segment.append(event.text)
+                            self._sent()
+                            yield self.chunk({"refusal": event.text})
+                        elif isinstance(event, ToolCallStart):
+                            # A new call starting means every earlier call is complete.
+                            ready = flush_calls(before=event.index)
+                            if ready:
+                                self._sent()
+                                yield ready
+                            calls[event.index] = [event.id, event.name, ""]
+                            segment.append(event.name)
+                        elif isinstance(event, ToolCallArgs):
+                            if event.index in calls:
+                                calls[event.index][2] += event.delta
+                            segment.append(event.delta)
+                        elif isinstance(event, Finish):
+                            result.finish_reason = event.reason
+                        elif isinstance(event, UsageReport):
+                            result.usage = event.usage
+                    break
+                except ProviderError as error:
+                    continuation: Continuation | None = None
+                    if not result.tool_calls and can_continue():
+                        yield (
+                            f": switchyard failover: {error.kind.value} after "
+                            f"{len(''.join(text))} characters\n\n"
+                        ).encode()
+                        emitted = "".join(text)
+                        failed = Segment("".join(segment), result.usage)
+                        task = asyncio.ensure_future(self._resume(error, emitted, failed))
+                        try:
+                            while not task.done():
+                                await asyncio.wait({task}, timeout=self.heartbeat_s)
+                                if not task.done():
+                                    yield HEARTBEAT
+                            continuation = task.result()
+                        finally:
+                            if not task.done():
+                                task.cancel()
+                                with contextlib.suppress(asyncio.CancelledError):
+                                    await task
+                    if continuation is None:
+                        raise
+                    yield f": switchyard {continuation.comment}\n\n".encode()
+                    result.midstream += 1
+                    result.usage = None
+                    segment = []
+                    pending = list(reversed(continuation.head))
+                    iterator = aiter(continuation.events)
+                    self._current = continuation.events
             result.text = "".join(text)
+            result.segment_text = "".join(segment)
             if buffer_text:
                 check_json(result.text, result.finish_reason, bool(result.refusal))
                 if result.text:
@@ -235,6 +340,7 @@ class Relay:
             completed = True
         except ProviderError as error:
             result.text = result.text or "".join(text)
+            result.segment_text = "".join(segment)
             if result.tool_calls:
                 # Complete tool calls already went out: end as a tool-call turn, dropping
                 # any call still in progress. The client runs the tools and calls back.
@@ -247,6 +353,7 @@ class Relay:
             # Runs on success, on a provider error, and when the client disconnects.
             if not completed:
                 result.text = result.text or "".join(text)
+                result.segment_text = result.segment_text or "".join(segment)
                 result.aborted = True
             summary = self._finalize_once()
         if result.error is not None:

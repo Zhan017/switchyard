@@ -218,12 +218,16 @@ def dry_config(mock_url: str, out_dir: Path) -> Path:
     format, so the script can be tested without keys."""
     raw = yaml.safe_load(expand_env(CONFIG.read_text()))
     for provider in raw["providers"].values():
-        provider["type"] = "openai"
+        # DeepSeek's API is OpenAI's, so its adapter talks to mockllm as it is (and native
+        # continuation needs a deepseek provider). Anthropic's isn't, so it becomes openai.
+        if provider["type"] != "deepseek":
+            provider["type"] = "openai"
         provider["base_url"] = f"{mock_url}/v1"
         provider.pop("api_key_env", None)
     raw["prices_file"] = str(CONFIG.parent / raw.get("prices_file", "prices.yaml"))
     path = out_dir / "dry-config.yaml"
     path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    load_settings(path)  # fail here with the reason, not later as "server did not start"
     return path
 
 

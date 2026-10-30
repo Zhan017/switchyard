@@ -460,3 +460,33 @@ def test_anthropic_tool_history_without_tools_declares_them() -> None:
     _, sent, _ = collect("anthropic", "anthropic_text.sse", req)
     assert sent["tools"] == [{"name": "get_weather", "input_schema": {"type": "object"}}]
     assert sent["tool_choice"] == {"type": "none"}
+
+
+# Native continuation (DeepSeek beta prefix completion)
+
+
+def test_deepseek_native_continuation_uses_the_beta_url_and_prefix() -> None:
+    from switchyard.streaming.continuation import continuation_request
+
+    req = continuation_request("native", request(), "The sky is")
+    events: list[StreamEvent] = []
+
+    async def go() -> list[dict[str, Any]]:
+        body = (STREAMS / "recorded" / "deepseek_text.sse").read_bytes()
+        async with provider(body) as (http, base, seen):
+            async for event in adapter("deepseek", http, base).stream(
+                "deepseek-flash", ModelConfig(continuation="native"), req
+            ):
+                events.append(event)
+            return seen
+
+    seen = asyncio.run(go())
+    assert seen[0]["path"] == "/beta/chat/completions"
+    last = seen[0]["json"]["messages"][-1]
+    assert last == {"role": "assistant", "content": "The sky is", "prefix": True}
+    assert Finish("stop") in events
+
+
+def test_prefix_is_not_sent_to_openai() -> None:
+    sent = collect("openai", "openai_text.sse")[1]
+    assert all("prefix" not in m for m in sent["messages"])

@@ -127,7 +127,9 @@ class OpenAIAdapter(Adapter):
         )
 
     async def complete(self, model: str, options: ModelConfig, request: ChatRequest) -> Completion:
-        data = await self.post_json(self.url(), self.body(model, options, request, stream=False))
+        data = await self.post_json(
+            self.url_for(request), self.body(model, options, request, stream=False)
+        )
         if "error" in data and not data.get("choices"):
             raise chunk_error(data["error"])
         choices = data.get("choices") or []
@@ -157,7 +159,7 @@ class OpenAIAdapter(Adapter):
         body = self.body(model, options, request, stream=True)
         finished = False
         started_calls: set[int] = set()
-        async with self.open_stream(self.url(), body) as events:
+        async with self.open_stream(self.url_for(request), body) as events:
             async for sse in events:
                 if sse.data.strip() == b"[DONE]":
                     # Keep reading to the end of the response (normally nothing is left)
@@ -211,6 +213,21 @@ class DeepSeekAdapter(OpenAIAdapter):
     """DeepSeek's API is OpenAI-compatible with a few differences."""
 
     max_tokens_field = "max_tokens"
+
+    def url_for(self, request: ChatRequest) -> str:
+        # Prefix completion (native continuation) is a beta feature, served only from the
+        # beta base URL.
+        if request.messages and request.messages[-1].prefix:
+            return f"{self.config.base_url.rstrip('/')}/beta/chat/completions"
+        return self.url()
+
+    def body(
+        self, model: str, options: ModelConfig, request: ChatRequest, *, stream: bool
+    ) -> dict[str, Any]:
+        body = super().body(model, options, request, stream=stream)
+        if request.messages and request.messages[-1].prefix:
+            body["messages"][-1]["prefix"] = True
+        return body
 
     def usage(self, raw: dict[str, Any]) -> Usage:
         return Usage(

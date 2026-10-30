@@ -34,6 +34,10 @@ class Adapter(ABC):
     @abstractmethod
     def url(self) -> str: ...
 
+    def url_for(self, request: ChatRequest) -> str:
+        """The endpoint for this request. DeepSeek serves prefix completion elsewhere."""
+        return self.url()
+
     @abstractmethod
     def body(
         self, model: str, options: ModelConfig, request: ChatRequest, *, stream: bool

@@ -28,6 +28,8 @@ class Message:
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None  # set on role "tool"
     name: str | None = None
+    # A trailing assistant message the model must continue (DeepSeek's prefix completion).
+    prefix: bool = False
 
 
 @dataclass(frozen=True)

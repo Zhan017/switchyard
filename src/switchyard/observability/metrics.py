@@ -103,6 +103,12 @@ class Metrics:
             ["from", "to", "phase", "strategy"],
             registry=r,
         )
+        self.seam_repair = Counter(
+            "switchyard_seam_repair_total",
+            "Seam repair fixes applied to mid-stream continuations, by action",
+            ["action"],
+            registry=r,
+        )
         self.retry_budget_exhausted = Counter(
             "switchyard_retry_budget_exhausted_total",
             "Same-provider retries refused by the retry budget",

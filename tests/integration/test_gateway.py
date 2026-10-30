@@ -245,8 +245,10 @@ async def test_provider_400_is_passed_through(gateway: Gateway, chaos: httpx.Cli
 async def test_mid_stream_failures_end_with_an_error_event(
     gateway: Gateway, chaos: httpx.Client, mode: str, params: dict[str, Any]
 ) -> None:
+    """With every model failing the same way, the continuation fails too (tests in
+    test_midstream.py cover the continuation working)."""
     client, _ = gateway
-    fault(chaos, mode, **params)
+    outage(chaos, mode, **params)
     started = time.monotonic()
     response = await client.post("/v1/chat/completions", json=chat(stream=True))
     assert response.status_code == 200
@@ -335,7 +337,7 @@ async def test_openai_sdk_streams_through_the_gateway(gateway: Gateway) -> None:
 async def test_openai_sdk_raises_on_a_mid_stream_error(
     gateway: Gateway, chaos: httpx.Client
 ) -> None:
-    fault(chaos, "error_event", tokens=3)
+    outage(chaos, "error_event", tokens=3)
     client = sdk(gateway)
     stream = await client.chat.completions.create(
         model="mock", messages=[{"role": "user", "content": "hi"}], stream=True
